@@ -27,7 +27,12 @@ export const RegistryFixer: React.FC = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [isFixing, setIsFixing] = useState(false);
   const [lastScan, setLastScan] = useState<string | null>(null);
-  const [fixResult, setFixResult] = useState<{ fixedCount: number; backupPath?: string } | null>(null);
+  const [fixResult, setFixResult] = useState<{
+    success: boolean;
+    fixedCount: number;
+    backupPath?: string;
+    message?: string;
+  } | null>(null);
 
   const runScan = async () => {
     setIsScanning(true);
@@ -53,7 +58,9 @@ export const RegistryFixer: React.FC = () => {
         true
       );
       setFixResult(result);
-      await runScan();
+      if (result.success) {
+        await runScan();
+      }
     } catch (e) {
       console.error('Fix failed:', e);
     }
@@ -142,13 +149,18 @@ export const RegistryFixer: React.FC = () => {
                 {criticalCount > 0 && `${criticalCount} critical &middot; `}
                 Last scan: {lastScan ? new Date(lastScan).toLocaleTimeString() : 'Never'}
               </p>
-              {fixResult && (
-                <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" />
-                  Fixed {fixResult.fixedCount} issues
-                  {fixResult.backupPath && ` &middot; Backup: ${fixResult.backupPath.split('\\').pop()}`}
-                </p>
-              )}
+              {fixResult &&
+                (fixResult.success ? (
+                  <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3" />
+                    Fixed {fixResult.fixedCount} issues
+                  </p>
+                ) : (
+                  <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                    {fixResult.message}
+                  </p>
+                ))}
             </div>
           </div>
           <button

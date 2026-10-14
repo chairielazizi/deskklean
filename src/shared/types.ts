@@ -377,7 +377,10 @@ export interface DeskKleanAPI {
 
   // Registry
   scanRegistry: () => Promise<RegistryIssue[]>;
-  fixRegistryIssues: (issueIds: string[], createBackup: boolean) => Promise<{ success: boolean; fixedCount: number; backupPath?: string }>;
+  fixRegistryIssues: (
+    issueIds: string[],
+    createBackup: boolean
+  ) => Promise<{ success: boolean; fixedCount: number; backupPath?: string; message?: string }>;
   getRegistryBackups: () => Promise<RegistryBackup[]>;
   restoreRegistryBackup: (backupId: string) => Promise<{ success: boolean; message: string }>;
 

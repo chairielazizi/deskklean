@@ -444,44 +444,40 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_FIX, async (_, issueIds: string[], createBackup: boolean) => {
-    let backupPath: string | undefined;
-
-    if (createBackup) {
-      const backupId = `reg-backup-${Date.now()}`;
-      backupPath = path.join(backupsDir, `${backupId}.reg`);
-      const backupContent = `Windows Registry Editor Version 5.00\n\n; DeskKlean Registry Backup\n; Created: ${new Date().toISOString()}\n; Issues backed up: ${issueIds.length}\n\n`;
-      try {
-        fs.writeFileSync(backupPath, backupContent);
-      } catch (err) {
-        console.error('Failed to write registry backup:', err);
-      }
-    }
-
-    logActivity({
-      module: 'registry-fixer',
-      title: 'Registry Cleaned',
-      detail: `Fixed ${issueIds.length} registry entries${backupPath ? ' (Backup created)' : ''}`,
-      type: 'success',
-    });
-
     return {
-      success: true,
-      fixedCount: issueIds.length,
-      backupPath,
+      success: false,
+      fixedCount: 0,
+      message:
+        'Registry cleaning is not implemented yet. No registry keys were modified and no backup was created.',
     };
   });
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_GET_BACKUPS, async (): Promise<RegistryBackup[]> => {
     try {
       const files = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.reg'));
-      return files.map((file, idx) => {
+      return files.map((file) => {
         const fullPath = path.join(backupsDir, file);
         const stats = fs.statSync(fullPath);
+        let issueCount = 0;
+        try {
+          const content = fs.readFileSync(fullPath, 'utf-8');
+          const commentMatch = content.match(/;\s*(?:Issues backed up|Issues|Issue count):\s*(\d+)/i);
+          if (commentMatch) {
+            const parsed = parseInt(commentMatch[1], 10);
+            issueCount = Number.isNaN(parsed) ? 0 : parsed;
+          } else {
+            const keyMatches = content.match(/^\[.+\]/gm);
+            issueCount = keyMatches ? keyMatches.length : 0;
+          }
+        } catch {
+          issueCount = 0;
+        }
+
         return {
           id: file.replace('.reg', ''),
           timestamp: stats.mtime.toISOString(),
           filePath: fullPath,
-          issueCount: 7 + idx * 3,
+          issueCount,
           sizeBytes: stats.size,
         };
       });
@@ -491,13 +487,10 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_RESTORE_BACKUP, async (_, backupId: string) => {
-    logActivity({
-      module: 'registry-fixer',
-      title: 'Registry Backup Restored',
-      detail: `Restored registry state from backup: ${backupId}`,
-      type: 'info',
-    });
-    return { success: true, message: `Backup ${backupId} successfully restored.` };
+    return {
+      success: false,
+      message: 'Registry backup restoration is not implemented yet.',
+    };
   });
 
   // --- Startup Optimizer ---
