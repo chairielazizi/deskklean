@@ -1,0 +1,34 @@
+appId: com.deskklean.app
+productName: DeskKlean
+copyright: Copyright © 2026 DeskKlean Team
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  icon: resources/icon.ico
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: DeskKlean
+  uninstallDisplayName: DeskKlean System Optimizer
+
+portable:
+  artifactName: ${productName}-Portable-${version}.${ext}
