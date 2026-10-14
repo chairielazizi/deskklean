@@ -2,7 +2,7 @@
 
 ## Overview
 
-DeskKlean is a Windows desktop application for system cleanup and optimization, inspired by CCleaner Pro. It is built with Electron + React + TypeScript and uses Node.js native modules for system-level operations.
+DeskKlean is a Windows desktop application for system cleanup and optimization, inspired by leading commercial cleaners. It is built with Electron + React + TypeScript and uses Node.js native modules for system-level operations.
 
 ## Tech Stack
 

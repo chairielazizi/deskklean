@@ -1,14 +1,14 @@
 # DeskKlean
 
-**Windows Desktop System Cleanup & Optimization Tool — CCleaner Pro Inspired**
+**Windows Desktop System Cleanup & Optimization Tool**
 
 A modern, privacy-respecting desktop application for Windows that cleans junk files, manages startup items, cleans the registry, and optimizes system performance.
 
 ---
 
-## DeskKlean vs CCleaner Pro — Feature Map
+## Feature Map — DeskKlean vs Commercial Cleaners
 
-| CCleaner Pro Feature | DeskKlean Equivalent | Status |
+| Commercial Feature | DeskKlean Equivalent | Status |
 |---|---|---|
 | Health Check (one-click scan) | One-Click Clean | Planned |
 | Custom Clean (junk/temp/cache) | Smart Clean | Planned |
@@ -21,7 +21,6 @@ A modern, privacy-respecting desktop application for Windows that cleans junk fi
 | File Recovery | Undelete Tool | Planned |
 | Drive Wiper | Secure Erase | Planned |
 | System Info | System Info Panel | Planned |
-| Auto-Clean (background service) | Background Service | Planned |
 | Scheduled Cleaning | Task Scheduler Integration | Planned |
 
 ---
@@ -30,16 +29,16 @@ A modern, privacy-respecting desktop application for Windows that cleans junk fi
 
 - **Framework:** Electron 28 + React 18 + Vite 5 + TypeScript
 - **Backend:** Node.js native modules + PowerShell integration
-- **Database:** SQLite (local config & scan history)
 - **UI:** Tailwind CSS 4 + Framer Motion + Lucide Icons
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full architecture.
+See [docs/DESIGN-DECISIONS.md](docs/DESIGN-DECISIONS.md) for the resolved design spec.
 
 ---
 
-## REA Analysis Findings
+## Reference Product Analysis
 
-See [docs/REA_ANALYSIS.md](docs/REA_ANALYSIS.md) for the reverse engineering analysis of CCleaner Pro v6.19.
+See [docs/REA_ANALYSIS.md](docs/REA_ANALYSIS.md) for the reverse-engineering analysis of a leading commercial cleaner's installer.
 
 ---
 

@@ -9,7 +9,7 @@ Status: **COMPLETE** — design tree exhausted, no open questions (Q1–Q23).
 
 | # | Decision | Resolution |
 |---|---|---|
-| Q1 | Platform target | **Windows only.** CCleaner is Windows-exclusive; staying focused avoids cross-platform tax. |
+| Q1 | Platform target | **Windows only.** The reference product is Windows-exclusive; staying focused avoids cross-platform tax. |
 | Q2 | Stack | **Electron + React + TypeScript** (Vite 5, Tailwind CSS 4 via PostCSS). |
 | Q3 | Audience / licence | **Public release, MIT.** Consistent with the author's other public repos. |
 | Q16 | Language | **English only** at launch. i18n deferred until there's demand. |
