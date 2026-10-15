@@ -28,8 +28,9 @@ export async function isElevated(): Promise<boolean> {
  * The caller is responsible for quitting the application.
  *
  * @param exePath - Non-empty absolute path to the executable to relaunch.
+ * @param args - Optional array of command-line arguments to pass to the executable.
  */
-export async function relaunchElevated(exePath: string): Promise<void> {
+export async function relaunchElevated(exePath: string, args?: string[]): Promise<void> {
   if (!isWindows()) {
     throw new Error('Elevation is only supported on Windows');
   }
@@ -43,7 +44,34 @@ export async function relaunchElevated(exePath: string): Promise<void> {
     throw new Error(`exePath must be an absolute path: ${trimmed}`);
   }
 
-  const escaped = trimmed.replace(/'/g, "''");
-  const script = `Start-Process -FilePath '${escaped}' -Verb RunAs`;
+  if (args !== undefined) {
+    if (!Array.isArray(args)) {
+      throw new Error('args must be an array of strings');
+    }
+    for (const arg of args) {
+      if (typeof arg !== 'string') {
+        throw new Error('Each arg must be a string');
+      }
+      if (arg.includes('"')) {
+        throw new Error(`arg cannot contain a double quote: ${arg}`);
+      }
+    }
+  }
+
+  const escapedExe = trimmed.replace(/'/g, "''");
+
+  let script: string;
+  if (!args || args.length === 0) {
+    script = `Start-Process -FilePath '${escapedExe}' -Verb RunAs`;
+  } else {
+    const formattedArgs = args.map((arg) => {
+      const withTrailingBackslash = arg.endsWith('\\') ? `${arg}\\` : arg;
+      const escapedArg = withTrailingBackslash.replace(/'/g, "''");
+      return `'"${escapedArg}"'`;
+    });
+    script = `Start-Process -FilePath '${escapedExe}' -ArgumentList ${formattedArgs.join(',')} -Verb RunAs`;
+  }
+
   await runPowerShell(script);
 }
+

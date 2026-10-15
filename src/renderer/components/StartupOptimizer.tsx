@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Rocket,
   HardDrive,
+  Info,
 } from 'lucide-react';
 
 const IMPACT_COLORS: Record<string, { bg: string; text: string; bar: string }> = {
@@ -27,6 +28,7 @@ export const StartupOptimizer: React.FC = () => {
   const [isElevated, setIsElevated] = useState(true);
   const [isRelaunching, setIsRelaunching] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
+  const [relaunchMessage, setRelaunchMessage] = useState<string | null>(null);
 
   const loadItems = async () => {
     setIsLoading(true);
@@ -42,10 +44,16 @@ export const StartupOptimizer: React.FC = () => {
   const handleRelaunch = async () => {
     setIsRelaunching(true);
     setToggleError(null);
+    setRelaunchMessage(null);
     try {
       const res = await api.relaunchElevated();
-      if (!res.success && res.message) {
-        setToggleError(res.message);
+      if (!res.success) {
+        if (res.message) {
+          setToggleError(res.message);
+        }
+        setIsRelaunching(false);
+      } else if (res.message) {
+        setRelaunchMessage(res.message);
         setIsRelaunching(false);
       }
     } catch (err) {
@@ -157,6 +165,27 @@ export const StartupOptimizer: React.FC = () => {
             className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shrink-0 disabled:opacity-50"
           >
             {isRelaunching ? 'Restarting...' : 'Restart as administrator'}
+          </button>
+        </motion.div>
+      )}
+
+      {/* Relaunch Informational Note */}
+      {relaunchMessage && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-blue-300 text-sm"
+        >
+          <div className="flex items-center gap-2">
+            <Info className="w-4 h-4 text-blue-400 shrink-0" />
+            <span>{relaunchMessage}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setRelaunchMessage(null)}
+            className="text-xs text-blue-400 hover:text-white px-2 py-0.5"
+          >
+            Dismiss
           </button>
         </motion.div>
       )}

@@ -862,11 +862,18 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH_ELEVATED, async (): Promise<{ success: boolean; message?: string }> => {
     try {
-      await relaunchElevated(process.execPath);
-      setTimeout(() => {
-        app.quit();
-      }, 1000);
-      return { success: true };
+      const args = app.isPackaged ? [] : [app.getAppPath()];
+      await relaunchElevated(process.execPath, args);
+      if (app.isPackaged) {
+        setTimeout(() => app.quit(), 1000);
+        return { success: true };
+      } else {
+        return {
+          success: true,
+          message:
+            'An elevated window has opened. Keep this window open so the dev server stays available, then close it when you are done.',
+        };
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { success: false, message };
