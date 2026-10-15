@@ -48,6 +48,11 @@ const api: DeskKleanAPI = {
   getRegistryBackups: (): Promise<RegistryBackup[]> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_GET_BACKUPS),
   restoreRegistryBackup: (backupId: string) => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_RESTORE_BACKUP, backupId),
 
+  // App / Elevation
+  isElevated: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.APP_IS_ELEVATED),
+  relaunchElevated: (): Promise<{ success: boolean; message?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APP_RELAUNCH_ELEVATED),
+
   // Startup
   getStartupItems: (): Promise<StartupItem[]> => ipcRenderer.invoke(IPC_CHANNELS.STARTUP_GET_ITEMS),
   toggleStartupItem: (id: string, enabled: boolean) =>

@@ -28,7 +28,8 @@ import {
   ActivityItem,
 } from '../shared/types';
 import { isWindows } from './system/powershell';
-import { getStartupItems } from './system/startup';
+import { getStartupItems, toggleStartupItem } from './system/startup';
+import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
   getPhysicalMemory,
@@ -854,6 +855,24 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     };
   });
 
+  // --- App / Elevation ---
+  ipcMain.handle(IPC_CHANNELS.APP_IS_ELEVATED, async (): Promise<boolean> => {
+    return isElevated();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH_ELEVATED, async (): Promise<{ success: boolean; message?: string }> => {
+    try {
+      await relaunchElevated(process.execPath);
+      setTimeout(() => {
+        app.quit();
+      }, 1000);
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, message };
+    }
+  });
+
   // --- Startup Optimizer ---
   let startupItems: (StartupItem & { bootDelaySec?: number })[] = [
     {
@@ -866,6 +885,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: false,
       bootDelaySec: 0,
       estimatedBootImpactMs: 1850,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Spotify',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Spotify',
+      },
     },
     {
       id: 'startup-2',
@@ -877,6 +904,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: true,
       bootDelaySec: 15,
       estimatedBootImpactMs: 2200,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Discord',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Discord',
+      },
     },
     {
       id: 'startup-3',
@@ -888,6 +923,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: true,
       bootDelaySec: 0,
       estimatedBootImpactMs: 950,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'OneDrive',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'OneDrive',
+      },
     },
     {
       id: 'startup-4',
@@ -899,6 +942,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: false,
       bootDelaySec: 0,
       estimatedBootImpactMs: 2400,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Steam',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Steam',
+      },
     },
     {
       id: 'startup-5',
@@ -910,6 +961,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: true,
       bootDelaySec: 0,
       estimatedBootImpactMs: 180,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'RtkAudioService',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'RtkAudioService',
+      },
     },
     {
       id: 'startup-6',
@@ -921,6 +980,11 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: false,
       bootDelaySec: 30,
       estimatedBootImpactMs: 1200,
+      target: {
+        kind: 'task',
+        taskPath: '\\Adobe\\',
+        taskName: 'Adobe Creative Cloud Sync',
+      },
     },
     {
       id: 'startup-7',
@@ -932,6 +996,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       enabled: true,
       bootDelaySec: 0,
       estimatedBootImpactMs: 40,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'MSASCuiL',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'MSASCuiL',
+      },
     },
   ];
 
@@ -939,16 +1011,23 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     return getStartupItems();
   });
 
-  ipcMain.handle(IPC_CHANNELS.STARTUP_TOGGLE_ITEM, async (_, id: string, enabled: boolean) => {
-    startupItems = startupItems.map((item) => (item.id === id ? { ...item, enabled } : item));
-    logActivity({
-      module: 'startup-optimizer',
-      title: `Startup Item ${enabled ? 'Enabled' : 'Disabled'}`,
-      detail: `${startupItems.find((i) => i.id === id)?.name || id} is now ${enabled ? 'enabled' : 'disabled'}`,
-      type: 'info',
-    });
-    return { success: true };
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.STARTUP_TOGGLE_ITEM,
+    async (_, id: string, enabled: boolean): Promise<{ success: boolean; message?: string }> => {
+      const result = await toggleStartupItem(id, enabled);
+      if (result.success) {
+        logActivity({
+          module: 'startup-optimizer',
+          title: `Startup Item ${enabled ? 'Enabled' : 'Disabled'}`,
+          detail: result.backupPath
+            ? `Startup item ${id} was ${enabled ? 'enabled' : 'disabled'}. Backup saved to: ${result.backupPath}`
+            : `Startup item ${id} was ${enabled ? 'enabled' : 'disabled'}.`,
+          type: 'success',
+        });
+      }
+      return result;
+    }
+  );
 
   ipcMain.handle(IPC_CHANNELS.STARTUP_SET_DELAY, async (_, id: string, delaySec: number) => {
     startupItems = startupItems.map((item) => (item.id === id ? { ...item, bootDelaySec: delaySec } : item));

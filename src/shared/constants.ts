@@ -5,6 +5,10 @@ export const APP_VERSION = '1.0.0';
 export const APP_AUTHOR = 'DeskKlean Team';
 
 export const IPC_CHANNELS = {
+  // App / Elevation
+  APP_IS_ELEVATED: 'app:isElevated',
+  APP_RELAUNCH_ELEVATED: 'app:relaunchElevated',
+
   // Window
   WINDOW_MINIMIZE: 'window:minimize',
   WINDOW_MAXIMIZE: 'window:maximize',

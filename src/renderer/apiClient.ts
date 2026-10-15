@@ -303,6 +303,10 @@ const mockAPI: DeskKleanAPI = {
     message: `Backup ${backupId} restored successfully`,
   }),
 
+  // App / Elevation
+  isElevated: async (): Promise<boolean> => false,
+  relaunchElevated: async (): Promise<{ success: boolean; message?: string }> => ({ success: true }),
+
   getStartupItems: async (): Promise<StartupItem[]> => [
     {
       id: 'startup-1',
@@ -313,6 +317,14 @@ const mockAPI: DeskKleanAPI = {
       impact: 'high',
       enabled: false,
       estimatedBootImpactMs: 1850,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Spotify',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Spotify',
+      },
     },
     {
       id: 'startup-2',
@@ -323,6 +335,14 @@ const mockAPI: DeskKleanAPI = {
       impact: 'high',
       enabled: true,
       estimatedBootImpactMs: 2200,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Discord',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Discord',
+      },
     },
     {
       id: 'startup-3',
@@ -333,6 +353,14 @@ const mockAPI: DeskKleanAPI = {
       impact: 'medium',
       enabled: true,
       estimatedBootImpactMs: 950,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'OneDrive',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'OneDrive',
+      },
     },
     {
       id: 'startup-4',
@@ -343,6 +371,14 @@ const mockAPI: DeskKleanAPI = {
       impact: 'high',
       enabled: false,
       estimatedBootImpactMs: 2400,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'Steam',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'Steam',
+      },
     },
     {
       id: 'startup-5',
@@ -353,6 +389,14 @@ const mockAPI: DeskKleanAPI = {
       impact: 'low',
       enabled: true,
       estimatedBootImpactMs: 180,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: 'RtkAudioService',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: 'RtkAudioService',
+      },
     },
     {
       id: 'startup-6',
@@ -363,10 +407,17 @@ const mockAPI: DeskKleanAPI = {
       impact: 'medium',
       enabled: false,
       estimatedBootImpactMs: 1200,
+      target: {
+        kind: 'task',
+        taskPath: '\\Adobe\\',
+        taskName: 'Adobe Creative Cloud Sync',
+      },
     },
   ],
 
-  toggleStartupItem: async (id: string, enabled: boolean) => ({ success: true }),
+  toggleStartupItem: async (id: string, enabled: boolean): Promise<{ success: boolean; message?: string }> => ({
+    success: true,
+  }),
   setStartupItemDelay: async (id: string, delaySec: number) => ({ success: true }),
 
   getInstalledApps: async (): Promise<InstalledApp[]> => [

@@ -1,8 +1,18 @@
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { runPowerShell, parseJsonSafe, isWindows } from './powershell';
-import { readKeyValues, decodeStartupApproved } from './registry';
+import {
+  readKeyValues,
+  readValue,
+  decodeStartupApproved,
+  encodeStartupApproved,
+  buildRegSnippet,
+  mergeRegSnippets,
+} from './registry';
 import { warnOnce } from './log';
-import { StartupItem, StartupImpact } from '../../shared/types';
+import { isElevated } from './elevation';
+import { StartupItem, StartupImpact, StartupItemTarget } from '../../shared/types';
 
 interface RawStartupFolderItem {
   Scope: 'common' | 'user';
@@ -319,6 +329,7 @@ interface RawDiscoveredItem {
   location: StartupItem['location'];
   source: 'registry' | 'folder' | 'task';
   enabled: boolean;
+  target: StartupItemTarget;
 }
 
 /**
@@ -352,35 +363,35 @@ export async function getStartupItems(): Promise<StartupItem[]> {
     event101ImpactMap,
   ] = await Promise.all([
     readKeyValues('HKCU', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run').catch((err) => {
-      console.warn('Failed to read HKCU Run key:', err);
+      warnOnce('startup:hkcu-run', 'Failed to read HKCU Run key', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKCU', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce').catch((err) => {
-      console.warn('Failed to read HKCU RunOnce key:', err);
+      warnOnce('startup:hkcu-runonce', 'Failed to read HKCU RunOnce key', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run').catch((err) => {
-      console.warn('Failed to read HKLM Run key:', err);
+      warnOnce('startup:hklm-run', 'Failed to read HKLM Run key', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce').catch((err) => {
-      console.warn('Failed to read HKLM RunOnce key:', err);
+      warnOnce('startup:hklm-runonce', 'Failed to read HKLM RunOnce key', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run').catch((err) => {
-      console.warn('Failed to read HKLM WOW6432Node Run key:', err);
+      warnOnce('startup:hklm-run32', 'Failed to read HKLM WOW6432Node Run key', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKCU', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run').catch((err) => {
-      console.warn('Failed to read HKCU StartupApproved\\Run:', err);
+      warnOnce('startup:hkcu-approved-run', 'Failed to read HKCU StartupApproved\\Run', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKCU', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32').catch((err) => {
-      console.warn('Failed to read HKCU StartupApproved\\Run32:', err);
+      warnOnce('startup:hkcu-approved-run32', 'Failed to read HKCU StartupApproved\\Run32', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKCU', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder').catch((err) => {
-      console.warn('Failed to read HKCU StartupApproved\\StartupFolder:', err);
+      warnOnce('startup:hkcu-approved-folder', 'Failed to read HKCU StartupApproved\\StartupFolder', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run').catch((err) => {
@@ -388,19 +399,19 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32').catch((err) => {
-      console.warn('Failed to read HKLM StartupApproved\\Run32:', err);
+      warnOnce('startup:hklm-approved-run32', 'Failed to read HKLM StartupApproved\\Run32', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder').catch((err) => {
-      console.warn('Failed to read HKLM StartupApproved\\StartupFolder:', err);
+      warnOnce('startup:hklm-approved-folder', 'Failed to read HKLM StartupApproved\\StartupFolder', err);
       return {} as Record<string, unknown>;
     }),
     queryStartupFolders().catch((err) => {
-      console.warn('Failed to query startup folders:', err);
+      warnOnce('startup:folders', 'Failed to query startup folders', err);
       return [];
     }),
     queryScheduledTasks().catch((err) => {
-      console.warn('Failed to query scheduled tasks:', err);
+      warnOnce('startup:tasks', 'Failed to query scheduled tasks', err);
       return [];
     }),
     queryEvent101Impacts().catch((err) => {
@@ -423,6 +434,14 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'HKCU_RUN',
       source: 'registry',
       enabled,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: name,
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: name,
+      },
     });
   }
 
@@ -436,6 +455,12 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'HKCU_RUNONCE',
       source: 'registry',
       enabled: true,
+      target: {
+        kind: 'registry',
+        hive: 'HKCU',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
+        valueName: name,
+      },
     });
   }
 
@@ -451,6 +476,14 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'HKLM_RUN',
       source: 'registry',
       enabled,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: name,
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
+        approvedValueName: name,
+      },
     });
   }
 
@@ -464,6 +497,12 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'HKLM_RUNONCE',
       source: 'registry',
       enabled: true,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce',
+        valueName: name,
+      },
     });
   }
 
@@ -479,13 +518,21 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'HKLM_RUN',
       source: 'registry',
       enabled,
+      target: {
+        kind: 'registry',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run',
+        valueName: name,
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32',
+        approvedValueName: name,
+      },
     });
   }
 
   // Startup folders
   for (const folderItem of folderItems) {
-    const approvedMap: Record<string, unknown> =
-      folderItem.Scope === 'user' ? hkcuApprovedFolder : hklmApprovedFolder;
+    const isUser = folderItem.Scope === 'user';
+    const approvedMap: Record<string, unknown> = isUser ? hkcuApprovedFolder : hklmApprovedFolder;
     const rawFlag = approvedMap[folderItem.FileName];
     const enabled = rawFlag !== undefined ? decodeStartupApproved(rawFlag) : true;
     const command =
@@ -500,6 +547,12 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'STARTUP_FOLDER',
       source: 'folder',
       enabled,
+      target: {
+        kind: 'folder',
+        hive: isUser ? 'HKCU' : 'HKLM',
+        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\StartupFolder',
+        approvedValueName: folderItem.FileName,
+      },
     });
   }
 
@@ -518,6 +571,11 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       location: 'SCHEDULED_TASK',
       source: 'task',
       enabled,
+      target: {
+        kind: 'task',
+        taskPath: task.TaskPath,
+        taskName: task.TaskName,
+      },
     });
   }
 
@@ -558,8 +616,219 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       enabled: raw.enabled,
       estimatedBootImpactMs: degradationMs,
       source: raw.source,
+      target: raw.target,
     };
   });
 
   return items;
+}
+
+/**
+ * Toggles a startup item enabled or disabled by updating its StartupApproved registry flag.
+ *
+ * Safety requirements enforced:
+ * - 6a. Re-enumerates startup items to resolve id; does NOT parse id string.
+ * - 6b. Refuses non-registry items without approvedKeyPath, scheduled tasks, and RunOnce.
+ * - 6c. Gates HKLM writes behind UAC elevation check; fails closed without attempting write.
+ * - 6d. Generates minimal single-value .reg backup written as UTF-16LE with BOM to %APPDATA%\DeskKlean\backups\startup\
+ *       and aborts if backup fails.
+ * - 6e. Writes StartupApproved flag without deleting Run values.
+ * - 6f. Confirms read-back state matches intended state before reporting success.
+ *
+ * @param id - The stable startup item identifier.
+ * @param enabled - The intended enabled state.
+ * @returns Object with success boolean, optional error message, and optional backupPath.
+ */
+export async function toggleStartupItem(
+  id: string,
+  enabled: boolean
+): Promise<{ success: boolean; message?: string; backupPath?: string }> {
+  if (!isWindows()) {
+    return { success: false, message: 'Startup items are only available on Windows.' };
+  }
+
+  // 6a. RE-ENUMERATE to resolve the id. Call getStartupItems() and find the item whose id matches.
+  const items = await getStartupItems();
+  const item = items.find((i) => i.id === id);
+  if (!item) {
+    return { success: false, message: 'Startup item not found. Rescan and try again.' };
+  }
+
+  const { target } = item;
+
+  // 6b. REFUSE non-registry / unsupported items
+  if (target.kind === 'task') {
+    return { success: false, message: 'Scheduled task toggling is not implemented yet.' };
+  }
+
+  if (!target.approvedKeyPath || !target.approvedValueName) {
+    return {
+      success: false,
+      message: 'RunOnce entries have no disable flag in Windows and cannot be disabled non-destructively.',
+    };
+  }
+
+  if (target.kind !== 'registry' && target.kind !== 'folder') {
+    return { success: false, message: 'Unsupported startup item kind.' };
+  }
+
+  // 6c. ELEVATION GATE
+  const hive = target.hive;
+  if (!hive || (hive !== 'HKCU' && hive !== 'HKLM')) {
+    return { success: false, message: 'Unknown or missing registry hive.' };
+  }
+
+  if (hive === 'HKLM' && !(await isElevated())) {
+    return {
+      success: false,
+      message: 'Administrator rights are required to change HKLM startup items.',
+    };
+  }
+
+  // 6d. BACK UP BEFORE WRITING
+  // 1. the Run value (hive, keyPath, valueName, data)
+  // 2. the StartupApproved flag value, if it exists
+  let backupFilePath = '';
+  try {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    const backupDir = path.join(appData, 'DeskKlean', 'backups', 'startup');
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+
+    const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const rawValName = target.valueName || target.approvedValueName || item.name;
+    const sanitizedValName = rawValName.replace(/[^a-zA-Z0-9._-]+/g, '_');
+    const backupFileName = `${isoTimestamp}-${hive}-${sanitizedValName}.reg`;
+    backupFilePath = path.join(backupDir, backupFileName);
+
+    const snippets: string[] = [];
+
+    // 1. Run value (if registry kind)
+    if (target.kind === 'registry') {
+      if (!target.keyPath || !target.valueName) {
+        return { success: false, message: 'Backup failed; no changes were made.' };
+      }
+      const runVal = await readValue(hive, target.keyPath, target.valueName);
+      if (!runVal.exists || runVal.data === undefined || runVal.data === null) {
+        return { success: false, message: 'Backup failed; no changes were made.' };
+      }
+      const runData =
+        typeof runVal.data === 'string' ||
+        typeof runVal.data === 'number' ||
+        Array.isArray(runVal.data) ||
+        Buffer.isBuffer(runVal.data) ||
+        runVal.data instanceof Uint8Array
+          ? (runVal.data as string | number | number[] | Buffer | Uint8Array)
+          : String(runVal.data);
+      const runSnippet = buildRegSnippet(
+        hive,
+        target.keyPath,
+        target.valueName,
+        runData,
+        runVal.type || 'REG_SZ'
+      );
+      snippets.push(runSnippet);
+    }
+
+    // 2. StartupApproved flag value (uniformly for both 'registry' and 'folder')
+    const approvedVal = await readValue(hive, target.approvedKeyPath, target.approvedValueName);
+    if (approvedVal.exists && approvedVal.data !== undefined && approvedVal.data !== null) {
+      let rawBytes: number[] = [];
+      if (Array.isArray(approvedVal.data)) {
+        rawBytes = approvedVal.data.map((x) => Number(x));
+      } else if (Buffer.isBuffer(approvedVal.data) || approvedVal.data instanceof Uint8Array) {
+        rawBytes = Array.from(approvedVal.data);
+      } else if (typeof approvedVal.data === 'string') {
+        const trimmed = approvedVal.data.trim();
+        const isHex = /^[0-9a-fA-F\s]+$/.test(trimmed) && !trimmed.includes('=');
+        const buf = Buffer.from(trimmed.replace(/\s+/g, ''), isHex ? 'hex' : 'base64');
+        rawBytes = Array.from(buf);
+      } else if (typeof approvedVal.data === 'object') {
+        const obj = approvedVal.data as Record<string, unknown>;
+        if (Array.isArray(obj.data)) {
+          rawBytes = obj.data.map((x) => Number(x));
+        } else {
+          rawBytes = Object.values(obj).map((x) => Number(x));
+        }
+      }
+
+      if (rawBytes.length > 0) {
+        const approvedSnippet = buildRegSnippet(
+          hive,
+          target.approvedKeyPath,
+          target.approvedValueName,
+          rawBytes,
+          'REG_BINARY'
+        );
+        snippets.push(approvedSnippet);
+      } else {
+        const deleteSnippet = buildRegSnippet(
+          hive,
+          target.approvedKeyPath,
+          target.approvedValueName,
+          undefined,
+          'DELETE'
+        );
+        snippets.push(deleteSnippet);
+      }
+    } else {
+      // For any item where StartupApproved flag didn't exist before,
+      // on rollback removing the flag restores original enabled state.
+      const deleteSnippet = buildRegSnippet(
+        hive,
+        target.approvedKeyPath,
+        target.approvedValueName,
+        undefined,
+        'DELETE'
+      );
+      snippets.push(deleteSnippet);
+    }
+
+    const backupContent = mergeRegSnippets(snippets);
+
+    // Write file as UTF-16LE WITH a BOM (\uFEFF)
+    fs.writeFileSync(backupFilePath, '\uFEFF' + backupContent, { encoding: 'utf16le' });
+
+    // Verify resulting bytes are FF FE at the start
+    const headerCheck = Buffer.alloc(2);
+    const fd = fs.openSync(backupFilePath, 'r');
+    fs.readSync(fd, headerCheck, 0, 2, 0);
+    fs.closeSync(fd);
+    if (headerCheck[0] !== 0xff || headerCheck[1] !== 0xfe) {
+      throw new Error('Backup file BOM check failed: first bytes are not FF FE');
+    }
+  } catch (err) {
+    warnOnce('startup:backup-failed', 'Failed to create backup before registry write', err);
+    return { success: false, message: 'Backup failed; no changes were made.' };
+  }
+
+  // 6e. WRITE THE FLAG
+  const bytes = encodeStartupApproved(enabled);
+  const bytesCsv = bytes.join(',');
+  const psPath = `${hive}:\\${target.approvedKeyPath.replace(/^[\\\/]+/, '')}`;
+  const escapedPath = escapePsSingleQuote(psPath);
+  const escapedName = escapePsSingleQuote(target.approvedValueName);
+
+  const writeScript = `
+    $p = '${escapedPath}';
+    if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force | Out-Null }
+    New-ItemProperty -LiteralPath $p -Name '${escapedName}' -Value ([byte[]](${bytesCsv})) -PropertyType Binary -Force | Out-Null
+  `.trim();
+
+  try {
+    await runPowerShell(writeScript);
+  } catch (err) {
+    warnOnce('startup:write-failed', 'Failed to write StartupApproved registry flag', err);
+    return { success: false, message: 'Write could not be verified.' };
+  }
+
+  // 6f. VERIFY THE WRITE
+  const verification = await readValue(hive, target.approvedKeyPath, target.approvedValueName);
+  if (!verification.exists || decodeStartupApproved(verification.data) !== enabled) {
+    return { success: false, message: 'Write could not be verified.' };
+  }
+
+  // 6g. Return confirmed success (caller logs with logActivity)
+  return { success: true, backupPath: backupFilePath };
 }

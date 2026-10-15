@@ -191,6 +191,17 @@ export type StartupLocation =
   | 'SCHEDULED_TASK'
   | 'SERVICE';
 
+export interface StartupItemTarget {
+  kind: 'registry' | 'folder' | 'task';
+  hive?: 'HKCU' | 'HKLM';
+  keyPath?: string;            // the Run/RunOnce key this item came from
+  valueName?: string;          // EXACT registry value name, original case
+  approvedKeyPath?: string;    // StartupApproved key for this item, if it has one
+  approvedValueName?: string;  // value name within the StartupApproved key
+  taskPath?: string;           // scheduled tasks
+  taskName?: string;
+}
+
 export interface StartupItem {
   id: string;
   name: string;
@@ -201,6 +212,7 @@ export interface StartupItem {
   enabled: boolean;
   estimatedBootImpactMs: number | null;
   source?: 'registry' | 'folder' | 'task';
+  target: StartupItemTarget;
 }
 
 // App Remover
@@ -386,9 +398,13 @@ export interface DeskKleanAPI {
   getRegistryBackups: () => Promise<RegistryBackup[]>;
   restoreRegistryBackup: (backupId: string) => Promise<{ success: boolean; message: string }>;
 
+  // App / Elevation
+  isElevated: () => Promise<boolean>;
+  relaunchElevated: () => Promise<{ success: boolean; message?: string }>;
+
   // Startup
   getStartupItems: () => Promise<StartupItem[]>;
-  toggleStartupItem: (id: string, enabled: boolean) => Promise<{ success: boolean }>;
+  toggleStartupItem: (id: string, enabled: boolean) => Promise<{ success: boolean; message?: string }>;
   setStartupItemDelay: (id: string, delaySec: number) => Promise<{ success: boolean }>;
 
   // Apps

@@ -329,41 +329,152 @@ export function escapeRegString(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+export type RegValueType =
+  | 'REG_SZ'
+  | 'REG_EXPAND_SZ'
+  | 'REG_BINARY'
+  | 'REG_DWORD'
+  | 'DELETE'
+  | string;
+
 /**
- * Emits a minimal .reg file string containing only one value.
+ * Normalizes registry value type strings (handles both Windows REG_* and .NET RegistryValueKind names).
+ */
+function normalizeValueType(
+  type?: string
+): 'REG_SZ' | 'REG_EXPAND_SZ' | 'REG_BINARY' | 'REG_DWORD' | 'DELETE' {
+  if (!type) return 'REG_SZ';
+  const upper = type.toUpperCase();
+  if (upper === 'REG_EXPAND_SZ' || upper === 'EXPANDSTRING') return 'REG_EXPAND_SZ';
+  if (upper === 'REG_BINARY' || upper === 'BINARY') return 'REG_BINARY';
+  if (upper === 'REG_DWORD' || upper === 'DWORD') return 'REG_DWORD';
+  if (upper === 'DELETE') return 'DELETE';
+  if (upper === 'REG_SZ' || upper === 'STRING') return 'REG_SZ';
+  return 'REG_SZ';
+}
+
+/**
+ * Emits a complete .reg file document containing a single value or delete directive.
  * The header path uses the LONG form (HKEY_CURRENT_USER / HKEY_LOCAL_MACHINE).
- * Back up one value, never the whole key.
+ * All line endings are CRLF.
  *
- * @param hive - 'HKCU' or 'HKLM'
- * @param keyPath - Path to the registry key
- * @param name - Name of the value (empty string or '@' for default value)
- * @param value - String value data
- * @param valueType - Optional value type (e.g. 'REG_SZ')
- * @returns Minimal .reg file contents.
+ * @param hive - Registry hive ('HKCU' | 'HKLM').
+ * @param keyPath - Path to the registry key.
+ * @param name - Name of the value (empty string or '@' for default value).
+ * @param value - Value data (string, number, byte array, Buffer, or Uint8Array).
+ * @param valueType - Registry value type ('REG_SZ' | 'REG_EXPAND_SZ' | 'REG_BINARY' | 'REG_DWORD' | 'DELETE').
+ * @returns Complete .reg document string with CRLF endings.
  */
 export function buildRegSnippet(
   hive: RegistryHive,
   keyPath: string,
   name: string,
-  value: string,
-  valueType?: string
+  value?: string | number[] | Uint8Array | Buffer | number | null,
+  valueType?: RegValueType
 ): string {
   const longHive = hive === 'HKCU' ? 'HKEY_CURRENT_USER' : 'HKEY_LOCAL_MACHINE';
   const cleanPath = keyPath
     .replace(/^(HKCU:|HKLM:|HKEY_CURRENT_USER|HKEY_LOCAL_MACHINE)[\\\/]*/i, '')
     .replace(/^[\\\/]+/, '');
 
-  const escapedValue = escapeRegString(value);
-  const valueLine =
-    name === '' || name === '@'
-      ? `@="${escapedValue}"`
-      : `"${escapeRegString(name)}"="${escapedValue}"`;
+  const keyHeader = cleanPath ? `[${longHive}\\${cleanPath}]` : `[${longHive}]`;
+  const prefix = name === '' || name === '@' ? '@=' : '"' + escapeRegString(name) + '"=';
+  const type = normalizeValueType(valueType);
+
+  let valueLine: string;
+
+  switch (type) {
+    case 'DELETE': {
+      valueLine = `${prefix}-`;
+      break;
+    }
+    case 'REG_DWORD': {
+      const num = typeof value === 'number' ? value : Number(value ?? 0);
+      const buf = Buffer.alloc(4);
+      buf.writeUInt32LE(num >>> 0, 0);
+      const dwordHex = buf.toString('hex').toLowerCase();
+      valueLine = `${prefix}dword:${dwordHex}`;
+      break;
+    }
+    case 'REG_BINARY': {
+      let hex = '';
+      if (Array.isArray(value)) {
+        hex = value
+          .map((b) => Number(b).toString(16).padStart(2, '0').toLowerCase())
+          .join(',');
+      } else if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+        hex = Array.from(value)
+          .map((b) => b.toString(16).padStart(2, '0').toLowerCase())
+          .join(',');
+      } else if (typeof value === 'string') {
+        const cleaned = value.replace(/^hex:/i, '').trim();
+        if (cleaned.includes(',')) {
+          hex = cleaned
+            .split(',')
+            .map((s) => s.trim().toLowerCase().padStart(2, '0'))
+            .join(',');
+        } else if (cleaned.length > 0 && /^[0-9a-fA-F]+$/.test(cleaned) && cleaned.length % 2 === 0) {
+          const matched = cleaned.match(/.{1,2}/g) || [];
+          hex = matched.map((s) => s.toLowerCase()).join(',');
+        } else {
+          hex = cleaned.toLowerCase();
+        }
+      }
+      valueLine = `${prefix}hex:${hex}`;
+      break;
+    }
+    case 'REG_EXPAND_SZ': {
+      const str = typeof value === 'string' ? value : String(value ?? '');
+      const buf = Buffer.concat([Buffer.from(str, 'utf16le'), Buffer.alloc(2)]);
+      const hex = Array.from(buf)
+        .map((b) => b.toString(16).padStart(2, '0').toLowerCase())
+        .join(',');
+      valueLine = `${prefix}hex(2):${hex}`;
+      break;
+    }
+    case 'REG_SZ':
+    default: {
+      const str = typeof value === 'string' ? value : String(value ?? '');
+      const escapedValue = escapeRegString(str);
+      valueLine = `${prefix}"${escapedValue}"`;
+      break;
+    }
+  }
 
   return [
     'Windows Registry Editor Version 5.00',
     '',
-    `[${longHive}\\${cleanPath}]`,
+    keyHeader,
     valueLine,
     '',
   ].join('\r\n');
+}
+
+/**
+ * Merges multiple .reg snippet documents under a single "Windows Registry Editor Version 5.00"
+ * header, preserving section headers and value lines without using regex stripping.
+ *
+ * @param snippets - Array of .reg snippet strings produced by buildRegSnippet.
+ * @returns Unified .reg file content with CRLF line endings.
+ */
+export function mergeRegSnippets(snippets: string[]): string {
+  const HEADER = 'Windows Registry Editor Version 5.00';
+  const sections: string[] = [];
+
+  for (const snippet of snippets) {
+    if (!snippet || !snippet.trim()) continue;
+    const lines = snippet.split('\r\n');
+    const keyIndex = lines.findIndex((l) => l.startsWith('['));
+    if (keyIndex !== -1) {
+      const sectionLines = lines.slice(keyIndex);
+      while (sectionLines.length > 0 && sectionLines[sectionLines.length - 1] === '') {
+        sectionLines.pop();
+      }
+      if (sectionLines.length > 0) {
+        sections.push(sectionLines.join('\r\n'));
+      }
+    }
+  }
+
+  return [HEADER, '', sections.join('\r\n\r\n'), ''].join('\r\n');
 }

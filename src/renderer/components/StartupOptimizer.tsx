@@ -24,6 +24,9 @@ export const StartupOptimizer: React.FC = () => {
   const [items, setItems] = useState<StartupItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [isElevated, setIsElevated] = useState(true);
+  const [isRelaunching, setIsRelaunching] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
 
   const loadItems = async () => {
     setIsLoading(true);
@@ -36,21 +39,46 @@ export const StartupOptimizer: React.FC = () => {
     setIsLoading(false);
   };
 
+  const handleRelaunch = async () => {
+    setIsRelaunching(true);
+    setToggleError(null);
+    try {
+      const res = await api.relaunchElevated();
+      if (!res.success && res.message) {
+        setToggleError(res.message);
+        setIsRelaunching(false);
+      }
+    } catch (err) {
+      setToggleError(err instanceof Error ? err.message : String(err));
+      setIsRelaunching(false);
+    }
+  };
+
   const toggleItem = async (id: string, enabled: boolean) => {
     setTogglingId(id);
+    setToggleError(null);
     try {
-      await api.toggleStartupItem(id, enabled);
-      setItems((prev) =>
-        prev.map((i) => (i.id === id ? { ...i, enabled } : i))
-      );
+      const res = await api.toggleStartupItem(id, enabled);
+      if (res.success) {
+        setItems((prev) =>
+          prev.map((i) => (i.id === id ? { ...i, enabled } : i))
+        );
+      } else if (res.message) {
+        setToggleError(res.message);
+      }
     } catch (e) {
       console.error('Toggle failed:', e);
+      setToggleError('Failed to toggle startup item');
+    } finally {
+      setTogglingId(null);
     }
-    setTogglingId(null);
   };
 
   useEffect(() => {
     loadItems();
+    api.isElevated()
+      .then((elevated) => setIsElevated(elevated))
+      .catch(() => setIsElevated(false));
   }, []);
 
   const enabledCount = items.filter((i) => i.enabled).length;
@@ -108,6 +136,48 @@ export const StartupOptimizer: React.FC = () => {
           </div>
         </div>
       </motion.div>
+
+      {/* UAC Elevation Banner */}
+      {!isElevated && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200"
+        >
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <p className="text-sm">
+              Administrator rights are required to change HKLM startup items.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleRelaunch}
+            disabled={isRelaunching}
+            className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shrink-0 disabled:opacity-50"
+          >
+            {isRelaunching ? 'Restarting...' : 'Restart as administrator'}
+          </button>
+        </motion.div>
+      )}
+
+      {/* Error message */}
+      {toggleError && (
+        <motion.div
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center justify-between gap-3 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm"
+        >
+          <span>{toggleError}</span>
+          <button
+            type="button"
+            onClick={() => setToggleError(null)}
+            className="text-xs text-rose-400 hover:text-white px-2 py-0.5"
+          >
+            Dismiss
+          </button>
+        </motion.div>
+      )}
 
       {/* Items List */}
       {isLoading ? (
