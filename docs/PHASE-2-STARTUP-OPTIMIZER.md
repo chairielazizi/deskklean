@@ -269,8 +269,17 @@ degraded feature mid-task. DeskKlean therefore adopts **Option A**:
    `settings.elevationPromptDismissed === false`) or the in-module banner. If requested
    by the user, relaunch elevated via:
    ```powershell
+   # packaged - process.execPath IS the app's own binary
    Start-Process -FilePath "<process.execPath>" -Verb RunAs
+
+   # unpackaged - process.execPath is electron.exe, which needs the app directory
+   # or it boots Electron's built-in demo app instead
+   Start-Process -FilePath "<process.execPath>" -ArgumentList '"<app.getAppPath()>"' -Verb RunAs
    ```
+
+   Each argument is passed explicitly double-quoted because `Start-Process
+   -ArgumentList` joins elements with spaces and does not quote them itself, so a
+   path containing a space would otherwise split into two arguments.
    In packaged builds, the unelevated parent process quits after launching. In
    development mode, the current window remains open so the Vite dev server stays alive.
 
@@ -338,18 +347,205 @@ PowerShell `*-ItemProperty`, not CIM.
 
 ---
 
+## Step specification
+
+Status: ✅ done · 🔜 specified, not built · ⏳ not specified
+
+Every step lists what it does, the rails that must hold, and how it is accepted.
+A step is not done until its acceptance test has actually run on Windows.
+
+### Step 1 — read primitives ✅ `ead9307`
+
+`src/main/system/registry.ts`. Typed reads over PowerShell `*-ItemProperty`, the
+StartupApproved codec, and the `.reg` string escaper. **No writes.**
+
+Rails:
+- The escaper escapes backslashes **then** quotes — the order matters, or the
+  backslash added for a quote gets doubled.
+- PowerShell values are escaped by doubling single quotes and every path uses
+  `-LiteralPath`, so a name containing `[` or `*` cannot be read as a wildcard.
+- `decodeStartupApproved` treats an unrecognised shape as **enabled**, never
+  disabled. The failure direction is deliberate.
+- `buildRegSnippet` is type-aware: `REG_SZ`, `REG_EXPAND_SZ` as `hex(2)` with a
+  UTF-16LE null terminator, `REG_BINARY` as `hex:`, `REG_DWORD`, and `DELETE` as `=-`.
+
+Acceptance: `node scripts/test-reg-escaper.mjs` — 17 cases, all pass.
+
+### Step 2 — enumeration ✅ `ead9307`
+
+`src/main/system/startup.ts`. HKCU/HKLM Run, both RunOnce keys, the WOW6432Node Run
+key, both Startup folders (resolving `.lnk` via `WScript.Shell`), and scheduled
+tasks with logon/boot triggers. Publisher from file version info.
+
+Rails:
+- Enabled state comes from StartupApproved in **both** hives. HKLM has these keys
+  too; reading only HKCU makes every HKLM entry look enabled.
+- A missing flag means **enabled**. A `reg.exe`-added value has no flag.
+- RunOnce has **no** StartupApproved key. Its absence is not an error.
+- OS-owned `\Microsoft\Windows\` tasks are skipped.
+- Every source degrades independently; one failure must not empty the list.
+- `id` is `hive-location-slug(name)`. **It is not reversible** — the slug lowercases
+  and collapses separators — so `StartupItem.target` carries the exact hive, key
+  path, value name and StartupApproved key for the write path. Never parse an `id`.
+
+Acceptance: the list matches Task Manager's Startup tab; a `G:`-style virtual disk
+shows Unknown rather than a wrong label.
+
+### Step 3 — event 101 impact ✅ `ead9307`
+
+Boot impact from `Microsoft-Windows-Diagnostics-Performance/Operational` event 101
+`DegradationTime`, matched by file name. Thresholds: `high` ≥ 1000 ms,
+`medium` ≥ 300 ms, `low` > 0, `none` when unmeasured.
+
+Rails:
+- Unmeasured items return `null`, never a guessed number. `estimatedBootImpactMs`
+  is nullable for this reason.
+- The query uses `-LogName` + `-FilterXPath '*[System[EventID=101]]'`, falling back
+  to a plain `-LogName` scan. "No events" and access-denied are **empty results, not
+  errors**.
+- Empty output must emit a literal `[]`: `@() | ConvertTo-Json` emits *nothing*.
+
+Acceptance: the impact column populates; unmeasured entries read Unavailable.
+
+### Step 4 — scheduled task enumeration ✅ `ead9307`
+
+Folded into step 2. Only logon/boot-triggered tasks, OS-owned paths excluded.
+
+Acceptance: third-party logon tasks appear; no `\Microsoft\Windows\` task does.
+
+### Step 5 — elevation ✅ `9305bc6` + `ccb2917`
+
+`src/main/system/elevation.ts` plus the startup prompt.
+
+Decided model — **Option A**: ask once at startup, not per feature. Rationale and
+the security counterweight are recorded in the UAC elevation section below.
+
+Rails:
+- `isElevated()` **fails closed** — any error means not elevated, so the app never
+  attempts a write it cannot perform.
+- `relaunchElevated(exePath, args?)` passes `app.getAppPath()` when unpackaged.
+  `process.execPath` is the app's own binary only when packaged; in dev it is
+  `electron.exe`, which boots Electron's demo app when given no argument.
+- Each argument is passed explicitly double-quoted: `Start-Process -ArgumentList`
+  joins with spaces and does not quote, so a path with a space would split.
+- `app.quit()` runs **only when packaged**. In dev, `concurrently -k` would kill
+  Vite when Electron exits, leaving the elevated instance on a blank window.
+- The startup prompt is skippable only through "Continue without administrator",
+  which records `settings.elevationPromptDismissed`. No X, no backdrop-close.
+- If reading settings or elevation fails, the prompt is **skipped** — the gate fails
+  closed, the prompt fails open.
+
+Acceptance: the prompt appears once when unelevated; declining stops it returning;
+the elevated window is actually DeskKlean.
+
+### Step 6 — the toggle ✅ `fa9f12b`
+
+`toggleStartupItem(id, enabled)`. The first registry write in the project.
+
+Rails:
+- Resolve the id by **re-enumerating and matching**, never by parsing it.
+- **Refuse RunOnce.** Windows gives it no StartupApproved flag, so "disabling" could
+  only mean deleting it — destructive, and not what a disable control promises.
+- **Refuse HKLM writes when unelevated**, without attempting.
+- **Back up before writing, and abort if the backup fails.** The Run value with its
+  real type plus the StartupApproved flag, merged into one `.reg` written UTF-16LE
+  with a BOM; the file is reopened and its first bytes asserted `FF FE`, because
+  `reg import` reads a BOM-less file as ANSI and would corrupt a non-ASCII name.
+- The flag entry is emitted **uniformly for registry and folder items**: the existing
+  flag as `REG_BINARY`, an absent flag as `DELETE`. Emitting `DELETE` only for folders
+  leaves a Run entry with no prior flag still disabled after a restore.
+- Write the flag; **never delete the Run value**.
+- **Verify by read-back.** `success: true` only when the read-back confirms the
+  intended state. A write that silently did nothing must never report success.
+- Log only on confirmed success, including the backup path.
+
+Acceptance: disable an entry → it leaves Task Manager's Startup tab and
+`StartupApproved\Run` reads `03 00 00 00 …` → restore → it returns.
+
+### Step 7 — global startup delay 🔜
+
+Replaces the removed per-item delay (D2). Windows waits ~10 s and for CPU idle
+before launching startup apps; on a fast machine that is 20 s+ past login. Setting
+both to zero does not shorten boot, but makes the desktop usable sooner.
+
+Location — `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize`:
+
+| Value | Type | Meaning |
+|---|---|---|
+| `StartupDelayInMSec` | `REG_DWORD` | ms to wait before launching startup apps |
+| `WaitForIdleState` | `REG_DWORD` | `0` = do not also wait for CPU idle |
+
+Contract:
+- `getStartupDelay(): Promise<StartupDelayState>` —
+  `{ delayMs: number | null, waitForIdle: boolean | null, supported: boolean }`
+- `setStartupDelay(ms: number | null, waitForIdle: boolean)`
+
+Rails:
+- **`null` and `0` are different states and must not be conflated.** Absent means
+  Windows default (~10 s); `0` means explicitly no delay. `delayMs: null` reports
+  the former.
+- `ms === null` **deletes** `StartupDelayInMSec`, restoring the Windows default.
+  That delete is the undo.
+- Create the `Serialize` key if missing.
+- HKCU only — **no elevation**.
+- Verify by read-back, exactly as the toggle does.
+
+**Decision — no `.reg` backup for this step.** A Run entry holds an unrecoverable
+command string, so losing it destroys data. These are two DWORDs holding no user
+data, and the undo is a documented delete back to default. The prior state is
+recorded in the activity log instead of a backup file. Revisit if the delay ever
+grows beyond these two values.
+
+Acceptance: `Get-ItemProperty 'HKCU:\…\Serialize'` shows both values after a write;
+reset removes them and the read reports the default state. The *behavioural* effect
+is only observable across a reboot, so it is accepted on the read-back plus a reboot
+check, not on a claim.
+
+### Step 8 — backup list + restore UI 🔜
+
+Makes the rollback reachable. Without it the backup is only usable by running
+`reg import` by hand, which makes the whole safety mechanism theoretical.
+
+Contract:
+- `getStartupBackups(): Promise<StartupBackup[]>`
+- `restoreStartupBackup(id): Promise<{ success: boolean; message?: string }>`
+
+Rails:
+- **The backup file must carry its own metadata.** The filename is
+  `<ISO>-<hive>-<slug(name)>` and the slug is lossy, so the item name cannot be
+  recovered from it — the same trap as `StartupItem.id`. Step 6's writer therefore
+  gains a `;` comment header inside the `.reg` recording the exact item name, hive,
+  location, value name and timestamp. `reg import` ignores `;` comments, and
+  `REGISTRY_GET_BACKUPS` already parses them, so this is an established pattern here.
+- **Path traversal guard.** The id must resolve to a file strictly inside the backup
+  directory; reject anything else.
+- **Validate before importing.** `reg import` writes whatever the file says, so
+  confirm the file begins with the `Windows Registry Editor Version 5.00` header
+  before running it.
+- **HKLM restores require elevation**, same gate as the toggle.
+- **Never auto-restore.** Every restore is user-initiated and logged.
+- A restore is not verifiable generically the way a single flag write is, so success
+  means `reg import` exited 0 *and* the action was logged with the file path. Do not
+  claim the prior state was restored without re-reading it.
+
+Acceptance: disabling an item produces a backup listed with its real name and hive;
+restoring it returns the item to its prior state; a RunOnce toggle is refused and
+creates no backup.
+
+---
+
 ## Implementation order
 
 Safety-first — every read-only step lands before the first write:
 
-1. `registry.ts` read + StartupApproved decode + the `.reg` escaper (**no writes**)
-2. `getStartupItems()` — Run keys, folders, publisher, enabled state
-3. Event 101 impact
-4. Scheduled task enumeration
-5. `elevation.ts` + the UI banner
-6. `toggleStartupItem()` — backup, then write the flag
-7. `getStartupDelay()` / `setStartupDelay()`
-8. Backup list + restore UI
+1. `registry.ts` read + StartupApproved decode + the `.reg` escaper (**no writes**) — ✅
+2. `getStartupItems()` — Run keys, folders, publisher, enabled state — ✅
+3. Event 101 impact — ✅
+4. Scheduled task enumeration — ✅
+5. `elevation.ts` + the UI banner — ✅
+6. `toggleStartupItem()` — backup, then write the flag — ✅
+7. `getStartupDelay()` / `setStartupDelay()` — 🔜
+8. Backup list + restore UI — 🔜
 
 Steps 1–4 are read-only and safe to ship on their own. Step 6 is the first write
 and must not be attempted before step 5 works.
@@ -389,6 +585,45 @@ net session
 from Task Manager's Startup tab *and* that `StartupApproved\Run` shows
 `03 00 00 00 …`, then re-enable and confirm it returns. That round-trip is the whole
 point of the phase.
+
+---
+
+## Defects found during implementation
+
+Recorded because each one was invisible to type-checking and would have shipped as
+silent wrong behaviour. "Verified" below means read-and-reasoned; none of this can
+be executed on the build machine, which has no PowerShell and no registry.
+
+### Fixed
+
+| # | Defect | Why it mattered | Fix | Commit |
+|---|---|---|---|---|
+| 1 | `Write-Warning` inside a PowerShell `catch` landed on **stdout** | The parser received `WARNING: …` before the payload and threw, killing a whole data source. Any stray stdout byte could do it | `$WarningPreference = 'SilentlyContinue'`, `[Console]::Error.WriteLine`, and a `parseJsonSafe` that cannot throw at every `JSON.parse` site | `1ba6408` |
+| 2 | Event 101 used `-FilterHashtable` and treated "no events" as an error | The impact column was empty and the failure repeated on every poll | `-LogName` + `-FilterXPath`, fallback to a plain scan, "no events" and access-denied as empty results | `1ba6408` |
+| 3 | RunOnce items reported `location: HKCU_RUN` while their `id` said runonce | The write path could not tell which key to write without parsing the id | `HKCU_RUNONCE` / `HKLM_RUNONCE` added to `StartupLocation` | `1ba6408` |
+| 4 | The rollback `DELETE` entry was emitted **only for folder items** | A Run entry with no prior flag — the *default* state — stayed disabled after a restore. The safety mechanism silently failed | Emit the flag entry uniformly for both kinds | `fa9f12b` |
+| 5 | The backup wrote the Run value as `REG_SZ` regardless of its real type | A `REG_EXPAND_SZ` entry restored with `%ProgramFiles%` unexpanded, so the program would not start after a restore | `buildRegSnippet` made type-aware; the type comes from `readValue` | `fa9f12b` |
+| 6 | `relaunchElevated(process.execPath)` passed no app path | Opened Electron's built-in demo instead of DeskKlean, because `process.execPath` is the app's own binary only when packaged | Pass `app.getAppPath()` when unpackaged, each argument explicitly quoted | `9305bc6` |
+| 7 | `app.quit()` ran unconditionally after the relaunch | In dev, `concurrently -k` killed Vite when Electron exited, leaving the elevated instance on a blank window | Quit only when packaged | `9305bc6` |
+| 8 | The doc claimed DeskKlean followed CCleaner's per-feature gating model | The claim was simply false — CCleaner requests elevation at launch and ships a "skip UAC" scheduled task. A decision was resting on a fabricated precedent | Corrected, with the real rationale and the security counterweight recorded | `ccb2917` |
+
+### Open
+
+| # | Defect | Status |
+|---|---|---|
+| O1 | **The single-instance lock defeats the elevated relaunch.** `main.ts:138` calls `app.requestSingleInstanceLock()`, so the elevated instance starts, fails the lock, and quits — firing `second-instance` and focusing the original. In dev: no new window. Packaged: the original then quits too, so both processes exit. **One cause, both symptoms.** | Fix specified: `app.releaseSingleInstanceLock()` before relaunching, re-acquiring if the relaunch fails. Not yet built |
+| O2 | **A packaged portable build showed no startup elevation prompt.** Ruled out: `SETTINGS_GET` merges with `DEFAULT_SETTINGS` so `elevationPromptDismissed` defaults to `false`; the modal is rendered; `apiClient` resolves to the real preload in Electron. Prime suspect is a stale build (`npm run dist` before the new source synced), but this is **not confirmed** | Needs a diagnostic in the packaged app rather than a guess |
+| O3 | The elevation snippet in this doc still shows the packaged-only form | Fold into the next implementation run |
+
+### Process lesson
+
+Defects 4 and 5 both came from the same instruction: the implementer was told not to
+touch `buildRegSnippet`, so it string-replaced that function's output to get the
+binary and delete forms it could not express — and the delete hack landed in only one
+branch. The constraint, not the implementer, produced the bug. An earlier SMBIOS
+defect came from a wrong spec. **State the requirement and the invariant, not an
+implementation boundary; a function that cannot express what is needed will be
+worked around rather than fixed.**
 
 ---
 
