@@ -16,18 +16,37 @@ import { DuplicateFinder } from './components/DuplicateFinder';
 import { SecureErase } from './components/SecureErase';
 import { SystemInfo } from './components/SystemInfo';
 import { Settings } from './components/Settings';
+import { ElevationPrompt } from './components/ElevationPrompt';
+import { api } from './apiClient';
 
 const App: React.FC = () => {
   const [currentModule, setCurrentModule] = useState<ModuleId>('dashboard');
   const [isMaximized, setIsMaximized] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [showElevationPrompt, setShowElevationPrompt] = useState(false);
 
   useEffect(() => {
     // Check if window is maximized on mount
     if (window.deskKleanAPI) {
       window.deskKleanAPI.isMaximized().then(setIsMaximized);
     }
+
+    // Check if startup elevation prompt should be shown
+    const checkElevationPrompt = async () => {
+      try {
+        const [settings, elevated] = await Promise.all([
+          api.getSettings(),
+          api.isElevated(),
+        ]);
+        if (elevated === false && settings.elevationPromptDismissed === false) {
+          setShowElevationPrompt(true);
+        }
+      } catch (err) {
+        console.error('Failed to check elevation or settings on startup:', err);
+      }
+    };
+    checkElevationPrompt();
 
     // Simulate initial loading
     const timer = setTimeout(() => setIsLoading(false), 800);
@@ -134,6 +153,13 @@ const App: React.FC = () => {
           </AnimatePresence>
         </main>
       </div>
+
+      {/* Startup Elevation Prompt Modal */}
+      <AnimatePresence>
+        {showElevationPrompt && (
+          <ElevationPrompt onClose={() => setShowElevationPrompt(false)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -83,6 +83,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   customRules: [],
   scheduledCleanEnabled: false,
   scheduledCleanFrequency: 'weekly',
+  elevationPromptDismissed: false,
 };
 
 export const SHRED_METHODS: ShredMethod[] = [

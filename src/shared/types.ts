@@ -356,6 +356,7 @@ export interface AppSettings {
   customRules: CustomCleanRule[];
   scheduledCleanEnabled: boolean;
   scheduledCleanFrequency: 'daily' | 'weekly' | 'monthly';
+  elevationPromptDismissed: boolean;
 }
 
 // Activity Log

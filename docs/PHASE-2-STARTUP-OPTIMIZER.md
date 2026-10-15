@@ -234,27 +234,64 @@ registry-backup store so the UI has one backup list.
 
 ## UAC elevation
 
-The app should **not** run elevated all the time. Follow CCleaner's model:
+Earlier drafts claimed that DeskKlean follows the reference product's (CCleaner's)
+model of per-feature gating. That claim is incorrect: the reference product
+actually requests elevation at launch, and offers a "skip UAC" option implemented
+as a scheduled task.
 
-1. **Detect** elevation at startup — either:
+### Actual Decision: Option A (Startup Elevation Prompt)
+
+In practice, most of DeskKlean's core features need administrator rights (cleaning
+system locations, writing to HKLM registry keys, toggling system-wide startup entries,
+and app uninstall). Gating per-feature results in users encountering a refusing or
+degraded feature mid-task. DeskKlean therefore adopts **Option A**:
+
+- **Startup Prompt**: DeskKlean prompts for administrator rights once at launch if the
+  app is not elevated.
+- **Decline and Read-Only Browsing**: The user may decline the elevation prompt and
+  continue unelevated for read-only browsing (e.g. browsing System Info, scanning disks,
+  or reading the startup list). This choice is remembered via
+  `settings.elevationPromptDismissed`.
+- **Startup Optimizer Banner**: The Startup Optimizer banner remains in place as the
+  permanent, always-available way to elevate later if the user initially declined.
+- **Defence in Depth**: The per-feature HKLM elevation gate in `src/main/system/startup.ts`
+  is retained as defence in depth — a registry write must never proceed on an unverified
+  assumption.
+
+### Mechanism
+
+1. **Detect** elevation at startup via `isElevated()`:
    ```powershell
-   net session
    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
    ```
 2. **If elevated** — run normally.
-3. **If not** — show a banner: *"Administrator rights are required to change
-   startup items"*, with **Restart as administrator**:
+3. **If not elevated** — show the startup elevation modal (when
+   `settings.elevationPromptDismissed === false`) or the in-module banner. If requested
+   by the user, relaunch elevated via:
    ```powershell
    Start-Process -FilePath "<process.execPath>" -Verb RunAs
    ```
-   then quit.
-
-**Reads still work unelevated**, so the list populates regardless; only writes are
-gated. Gate per item: `HKCU` writes need no elevation; `HKLM` writes and the
-`Serialize` global-delay writes do.
+   In packaged builds, the unelevated parent process quits after launching. In
+   development mode, the current window remains open so the Vite dev server stays alive.
 
 There is no silent elevation. `Start-Process -Verb RunAs` always shows a UAC dialog
 — do not attempt to bypass it.
+
+### Security Note
+
+An always-elevated application is a privileged execution surface — anything able to
+drive its IPC can act as administrator. That is the reason all write paths stay
+narrow, backed up, and verified, and the reason DeskKlean adds no command-line
+arguments that perform privileged actions.
+
+### Packaging-time Consideration (Open Option)
+
+As a packaging-time alternative (not implemented here), a packaged production build
+could instead declare `requireAdministrator` in its manifest so Windows prompts before
+the process starts. That removes the relaunch code entirely, but also removes the
+"continue without administrator" option for read-only browsing, and cannot work in
+development because dev runs `electron.exe`, whose manifest we do not control.
+This remains recorded as an open option.
 
 ---
 
