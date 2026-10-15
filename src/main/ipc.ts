@@ -5,6 +5,13 @@ import fs from 'fs';
 import { IPC_CHANNELS, DEFAULT_SETTINGS, DEFAULT_CLEAN_CATEGORIES, SHRED_METHODS } from '../shared/constants';
 import {
   SystemSpecs,
+  OSInfo,
+  CPUInfo,
+  MemoryInfo,
+  DriveInfo,
+  GPUInfo,
+  MotherboardInfo,
+  NetworkInfo,
   HealthCheckResult,
   SmartCleanScanResult,
   SmartCleanResult,
@@ -19,8 +26,34 @@ import {
   ShredMethodId,
   AppSettings,
   ActivityItem,
-  DriveInfo,
 } from '../shared/types';
+import { isWindows } from './system/powershell';
+import {
+  getProcessors,
+  getPhysicalMemory,
+  getVideoControllers,
+  getBaseBoard,
+  getBios,
+  getOperatingSystem,
+  getLogicalDisks,
+  getPhysicalDisks,
+  getNetworkAdapters,
+  getActivationStatus,
+  getCpuPerformance,
+  getCpuTemperature,
+  getPartitions,
+  getDisks,
+  getNetworkAdapterDevices,
+  getNetworkPerformance,
+  getDiskPerformance,
+} from './system/cim';
+import {
+  toNumber,
+  parseCimDate,
+  smbiosMemoryType,
+  mediaTypeLabel,
+  busTypeLabel,
+} from './system/parse';
 
 export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const userDataDir = app.getPath('userData');
@@ -109,128 +142,455 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   // --- System Specs & Telemetry ---
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_SPECS, async (): Promise<SystemSpecs> => {
-    const cpus = os.cpus();
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const usedMem = totalMem - freeMem;
-    const isWin = os.platform() === 'win32';
+    if (!isWindows()) {
+      throw new Error('System specifications are only available on Windows');
+    }
 
-    // Drives estimation
-    const drives: DriveInfo[] = [
-      {
-        id: 'c',
-        mount: isWin ? 'C:\\' : '/',
-        label: isWin ? 'Windows OS (C:)' : 'Root (/)',
-        type: 'Fixed SSD (NVMe)',
-        totalBytes: 512 * 1024 * 1024 * 1024, // 512 GB
-        usedBytes: 328 * 1024 * 1024 * 1024, // 328 GB
-        freeBytes: 184 * 1024 * 1024 * 1024, // 184 GB
-        usagePercent: 64,
-        fileSystem: isWin ? 'NTFS' : 'ext4',
-        healthStatus: 'good',
-      },
-      {
-        id: 'd',
-        mount: isWin ? 'D:\\' : '/mnt/data',
-        label: isWin ? 'Data Storage (D:)' : 'Data Storage',
-        type: 'Fixed SSD (SATA)',
-        totalBytes: 1024 * 1024 * 1024 * 1024, // 1 TB
-        usedBytes: 412 * 1024 * 1024 * 1024,
-        freeBytes: 612 * 1024 * 1024 * 1024,
-        usagePercent: 40,
-        fileSystem: isWin ? 'NTFS' : 'ext4',
-        healthStatus: 'good',
-      },
-    ];
-
-    const cpuModel = cpus.length > 0 ? cpus[0].model : '13th Gen Intel(R) Core(TM) i7-13700K';
-    const cpuSpeed = cpus.length > 0 ? Math.round(cpus[0].speed / 100) / 10 : 3.4;
-
-    const netInterfaces = os.networkInterfaces();
-    let netName = 'Ethernet adapter';
-    let ip = '192.168.1.105';
-    let mac = '00:1A:2B:3C:4D:5E';
-
-    for (const [name, addrs] of Object.entries(netInterfaces)) {
-      if (addrs) {
-        for (const addr of addrs) {
-          if (!addr.internal && addr.family === 'IPv4') {
-            netName = name;
-            ip = addr.address;
-            mac = addr.mac;
-            break;
+    // 1. Operating System
+    let osInfo: OSInfo = {
+      platform: os.platform(),
+      distro: 'Unknown Windows',
+      release: os.release(),
+      build: 'Unknown',
+      arch: os.arch(),
+      hostname: os.hostname(),
+      uptimeSeconds: Math.floor(os.uptime()),
+      isWindows: true,
+      activationStatus: 'Unknown',
+    };
+    try {
+      const [osRows, activationStatus] = await Promise.all([
+        getOperatingSystem({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_OperatingSystem:', e);
+          return [];
+        }),
+        getActivationStatus({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query activation status:', e);
+          return 'Unknown';
+        }),
+      ]);
+      const osRow = osRows[0];
+      if (osRow) {
+        let uptimeSec = Math.floor(os.uptime());
+        if (osRow.LastBootUpTime) {
+          const bootIso = parseCimDate(osRow.LastBootUpTime);
+          if (bootIso) {
+            const bootTime = new Date(bootIso).getTime();
+            if (!Number.isNaN(bootTime) && bootTime > 0) {
+              uptimeSec = Math.max(0, Math.floor((Date.now() - bootTime) / 1000));
+            }
           }
         }
+        osInfo = {
+          platform: os.platform(),
+          distro: osRow.Caption || 'Microsoft Windows',
+          release: osRow.Version || os.release(),
+          build: osRow.BuildNumber || 'Unknown',
+          arch: osRow.OSArchitecture || os.arch(),
+          hostname: os.hostname(),
+          uptimeSeconds: uptimeSec,
+          isWindows: true,
+          activationStatus,
+        };
+      } else {
+        osInfo.activationStatus = activationStatus;
       }
+    } catch (err) {
+      console.warn('Failed to assemble OS section:', err);
+    }
+
+    // 2. CPU
+    let cpuInfo: CPUInfo = {
+      manufacturer: 'Unknown',
+      brand: 'Unknown Processor',
+      speedGhz: null,
+      cores: os.cpus().length || 1,
+      physicalCores: Math.max(1, Math.floor((os.cpus().length || 1) / 2)),
+      usagePercent: null,
+      tempC: null,
+    };
+    try {
+      const [processors, cpuPerf, cpuTemp] = await Promise.all([
+        getProcessors({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_Processor:', e);
+          return [];
+        }),
+        getCpuPerformance({ timeoutMs: 3000 }).catch((e) => {
+          console.warn('Failed to query CPU performance:', e);
+          return null;
+        }),
+        getCpuTemperature({ timeoutMs: 3000 }).catch((e) => {
+          console.warn('Failed to query CPU temperature:', e);
+          return null;
+        }),
+      ]);
+      const proc = processors[0];
+      if (proc) {
+        const maxClock = toNumber(proc.MaxClockSpeed);
+        const cores = toNumber(proc.NumberOfLogicalProcessors) ?? os.cpus().length ?? 1;
+        const physicalCores = toNumber(proc.NumberOfCores) ?? Math.max(1, Math.floor(cores / 2));
+        cpuInfo = {
+          manufacturer: proc.Manufacturer || 'Unknown',
+          brand: proc.Name ? proc.Name.trim() : (os.cpus()[0]?.model || 'Unknown Processor'),
+          speedGhz: maxClock !== null && maxClock > 0 ? Math.round((maxClock / 1000) * 100) / 100 : null,
+          cores,
+          physicalCores,
+          usagePercent: cpuPerf !== null ? Math.round(cpuPerf) : null,
+          tempC: cpuTemp,
+        };
+      } else {
+        cpuInfo.usagePercent = cpuPerf !== null ? Math.round(cpuPerf) : null;
+        cpuInfo.tempC = cpuTemp;
+      }
+    } catch (err) {
+      console.warn('Failed to assemble CPU section:', err);
+    }
+
+    // 3. Memory
+    let memoryInfo: MemoryInfo = {
+      totalBytes: os.totalmem(),
+      usedBytes: Math.max(0, os.totalmem() - os.freemem()),
+      freeBytes: os.freemem(),
+      usagePercent: os.totalmem() > 0 ? Math.round(((os.totalmem() - os.freemem()) / os.totalmem()) * 100) : 0,
+      speedMhz: null,
+      type: null,
+    };
+    try {
+      const [osRows, physMem] = await Promise.all([
+        getOperatingSystem({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_OperatingSystem for memory:', e);
+          return [];
+        }),
+        getPhysicalMemory({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_PhysicalMemory:', e);
+          return [];
+        }),
+      ]);
+      const osRow = osRows[0];
+      let totalBytes = os.totalmem();
+      let freeBytes = os.freemem();
+      if (osRow) {
+        const visibleKb = toNumber(osRow.TotalVisibleMemorySize);
+        const freeKb = toNumber(osRow.FreePhysicalMemory);
+        if (visibleKb !== null && visibleKb > 0) {
+          totalBytes = visibleKb * 1024;
+        }
+        if (freeKb !== null && freeKb >= 0) {
+          freeBytes = freeKb * 1024;
+        }
+      }
+      const usedBytes = Math.max(0, totalBytes - freeBytes);
+      const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
+
+      let speedMhz: number | null = null;
+      let memType: string | null = null;
+      if (physMem.length > 0) {
+        const speeds = physMem
+          .map((m) => toNumber(m.Speed))
+          .filter((s): s is number => s !== null && s > 0);
+        if (speeds.length > 0) {
+          speedMhz = Math.max(...speeds);
+        }
+        const typeModule = physMem.find(
+          (m) => m.SMBIOSMemoryType !== null && m.SMBIOSMemoryType !== undefined
+        );
+        if (typeModule) {
+          const rawCode = toNumber(typeModule.SMBIOSMemoryType);
+          memType = rawCode !== null ? smbiosMemoryType(rawCode) : 'Unknown';
+        }
+      }
+
+      memoryInfo = {
+        totalBytes,
+        usedBytes,
+        freeBytes,
+        usagePercent,
+        speedMhz,
+        type: memType,
+      };
+    } catch (err) {
+      console.warn('Failed to assemble memory section:', err);
+    }
+
+    // 4. Drives
+    let drives: DriveInfo[] = [];
+    try {
+      const [logicalDisks, partitions, disks, physicalDisks] = await Promise.all([
+        getLogicalDisks({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_LogicalDisk:', e);
+          return [];
+        }),
+        getPartitions({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query MSFT_Partition:', e);
+          return [];
+        }),
+        getDisks({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query MSFT_Disk:', e);
+          return [];
+        }),
+        getPhysicalDisks({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query MSFT_PhysicalDisk:', e);
+          return [];
+        }),
+      ]);
+
+      drives = logicalDisks.map((ld) => {
+        const letter = (ld.DeviceID || '').replace(':', '').trim().toUpperCase();
+        const part = partitions.find(
+          (p) => p.DriveLetter && p.DriveLetter.trim().toUpperCase() === letter
+        );
+        const diskNumber = part?.DiskNumber !== null && part?.DiskNumber !== undefined ? part.DiskNumber : null;
+        const disk = diskNumber !== null ? disks.find((d) => d.Number === diskNumber) : null;
+        const physDisk =
+          diskNumber !== null
+            ? physicalDisks.find(
+                (pd) =>
+                  pd.DeviceId !== null &&
+                  pd.DeviceId !== undefined &&
+                  String(pd.DeviceId).trim() === String(diskNumber)
+              )
+            : physicalDisks.length === 1
+            ? physicalDisks[0]
+            : null;
+
+        let driveType = 'Unknown';
+        let healthStatus: 'good' | 'warning' | 'bad' = 'good';
+
+        const mediaType = physDisk?.MediaType;
+        const busType = physDisk?.BusType ?? disk?.BusType;
+        const healthRaw = physDisk?.HealthStatus ?? disk?.HealthStatus;
+
+        if (mediaType !== null && mediaType !== undefined) {
+          const mLabel = mediaTypeLabel(mediaType);
+          const bLabel = busType !== null && busType !== undefined ? busTypeLabel(busType) : 'Unknown';
+          driveType = `${mLabel} (${bLabel})`;
+        } else if (busType !== null && busType !== undefined) {
+          const bLabel = busTypeLabel(busType);
+          driveType = `Drive (${bLabel})`;
+        }
+
+        if (driveType === 'Unknown (Unknown)') {
+          driveType = 'Unknown';
+        }
+
+        if (healthRaw === 1) {
+          healthStatus = 'warning';
+        } else if (healthRaw === 2) {
+          healthStatus = 'bad';
+        } else {
+          healthStatus = 'good';
+        }
+
+        const totalBytes = toNumber(ld.Size) ?? 0;
+        const freeBytes = toNumber(ld.FreeSpace) ?? 0;
+        const usedBytes = Math.max(0, totalBytes - freeBytes);
+        const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
+        const mount = ld.DeviceID ? (ld.DeviceID.endsWith('\\') ? ld.DeviceID : `${ld.DeviceID}\\`) : 'C:\\';
+        const label = ld.VolumeName || (ld.DeviceID ? `Local Disk (${ld.DeviceID})` : 'Local Disk');
+        const fileSystem = ld.FileSystem || 'NTFS';
+        const id = (ld.DeviceID || 'c').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'c';
+
+        return {
+          id,
+          mount,
+          label,
+          type: driveType,
+          totalBytes,
+          usedBytes,
+          freeBytes,
+          usagePercent,
+          fileSystem,
+          healthStatus,
+        };
+      });
+    } catch (err) {
+      console.warn('Failed to assemble drives section:', err);
+    }
+
+    // 5. GPU
+    let gpuInfo: GPUInfo = {
+      model: 'Unknown GPU',
+      vramMb: null,
+      driverVersion: null,
+      usagePercent: null,
+      tempC: null,
+    };
+    try {
+      const controllers = await getVideoControllers({ timeoutMs: 5000 });
+      const controller = controllers[0];
+      if (controller) {
+        const rawAdapterRam = toNumber(controller.AdapterRAM);
+        let vramMb: number | null = null;
+        if (rawAdapterRam !== null && rawAdapterRam > 0) {
+          const mb = Math.round(rawAdapterRam / (1024 * 1024));
+          vramMb = mb > 0 ? mb : null;
+        }
+        gpuInfo = {
+          model: controller.Name || 'Unknown GPU',
+          vramMb,
+          driverVersion: controller.DriverVersion || null,
+          usagePercent: null,
+          tempC: null,
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to assemble GPU section:', err);
+    }
+
+    // 6. Motherboard
+    let mbInfo: MotherboardInfo = {
+      manufacturer: 'Unknown',
+      model: 'Unknown',
+      biosVersion: 'Unknown',
+      biosDate: null,
+    };
+    try {
+      const [baseboard, bios] = await Promise.all([
+        getBaseBoard({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_BaseBoard:', e);
+          return [];
+        }),
+        getBios({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_BIOS:', e);
+          return [];
+        }),
+      ]);
+      const bb = baseboard[0];
+      const b = bios[0];
+      mbInfo = {
+        manufacturer: bb?.Manufacturer || 'Unknown',
+        model: bb?.Product || 'Unknown',
+        biosVersion: b?.SMBIOSBIOSVersion || 'Unknown',
+        biosDate: b?.ReleaseDate ? parseCimDate(b.ReleaseDate) : null,
+      };
+    } catch (err) {
+      console.warn('Failed to assemble motherboard section:', err);
+    }
+
+    // 7. Network
+    let netInfo: NetworkInfo = {
+      interfaceName: 'Ethernet',
+      ipAddress: 'Unavailable',
+      macAddress: 'Unavailable',
+      linkSpeedMbps: null,
+      rxBytesSec: 0,
+      txBytesSec: 0,
+    };
+    try {
+      const [configs, devices, perfRows] = await Promise.all([
+        getNetworkAdapters({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_NetworkAdapterConfiguration:', e);
+          return [];
+        }),
+        getNetworkAdapterDevices({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_NetworkAdapter:', e);
+          return [];
+        }),
+        getNetworkPerformance({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query Win32_PerfFormattedData_Tcpip_NetworkInterface:', e);
+          return [];
+        }),
+      ]);
+
+      const activeConfig =
+        configs.find((c) => {
+          if (Array.isArray(c.IPAddress) && c.IPAddress.length > 0) return true;
+          return typeof c.IPAddress === 'string' && c.IPAddress.trim().length > 0;
+        }) || configs[0];
+
+      if (activeConfig) {
+        let ipAddress = 'Unavailable';
+        if (Array.isArray(activeConfig.IPAddress) && activeConfig.IPAddress.length > 0) {
+          ipAddress = activeConfig.IPAddress[0];
+        } else if (typeof activeConfig.IPAddress === 'string') {
+          ipAddress = activeConfig.IPAddress;
+        }
+
+        const macAddress = activeConfig.MACAddress || 'Unavailable';
+        const interfaceName = activeConfig.Description || 'Network Adapter';
+
+        let linkSpeedMbps: number | null = null;
+        if (activeConfig.Index !== null && activeConfig.Index !== undefined) {
+          const matchedDev = devices.find((d) => d.Index === activeConfig.Index);
+          if (matchedDev) {
+            const rawSpeed = toNumber(matchedDev.Speed);
+            if (rawSpeed !== null && rawSpeed > 0) {
+              linkSpeedMbps = Math.round(rawSpeed / 1_000_000);
+            }
+          }
+        }
+
+        let rxBytesSec = 0;
+        let txBytesSec = 0;
+        const cleanDesc = (interfaceName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const matchedPerf = perfRows.find((p) => {
+          if (!p.Name) return false;
+          const cleanName = p.Name.toLowerCase().replace(/[^a-z0-9]/g, '');
+          return cleanName.length > 0 && (cleanName.includes(cleanDesc) || cleanDesc.includes(cleanName));
+        });
+        if (matchedPerf) {
+          rxBytesSec = toNumber(matchedPerf.BytesReceivedPersec) ?? 0;
+          txBytesSec = toNumber(matchedPerf.BytesSentPersec) ?? 0;
+        }
+
+        netInfo = {
+          interfaceName,
+          ipAddress,
+          macAddress,
+          linkSpeedMbps,
+          rxBytesSec,
+          txBytesSec,
+        };
+      }
+    } catch (err) {
+      console.warn('Failed to assemble network section:', err);
     }
 
     return {
-      os: {
-        platform: os.platform(),
-        distro: isWin ? 'Windows 11 Pro' : 'Linux / Development Shell',
-        release: isWin ? '23H2 (Build 22631.3527)' : os.release(),
-        build: '22631.3527',
-        arch: os.arch(),
-        hostname: os.hostname(),
-        uptimeSeconds: Math.floor(os.uptime()),
-        isWindows: isWin,
-        activationStatus: 'Windows is activated with a digital license',
-      },
-      cpu: {
-        manufacturer: 'Intel / AMD',
-        brand: cpuModel,
-        speedGhz: cpuSpeed,
-        cores: cpus.length || 16,
-        physicalCores: Math.max(1, Math.floor((cpus.length || 16) / 2)),
-        usagePercent: Math.floor(Math.random() * 25) + 12,
-        tempC: 44,
-      },
-      memory: {
-        totalBytes: totalMem,
-        usedBytes: usedMem,
-        freeBytes: freeMem,
-        usagePercent: Math.round((usedMem / totalMem) * 100),
-        speedMhz: 5600,
-        type: 'DDR5 Dual-Channel',
-      },
+      os: osInfo,
+      cpu: cpuInfo,
+      memory: memoryInfo,
       drives,
-      gpu: {
-        model: 'NVIDIA GeForce RTX 4070 Ti (12 GB GDDR6X)',
-        vramMb: 12288,
-        driverVersion: '551.86 Game Ready',
-        usagePercent: 8,
-        tempC: 41,
-      },
-      motherboard: {
-        manufacturer: 'ASUSTeK COMPUTER INC.',
-        model: 'ROG STRIX Z790-E GAMING WIFI',
-        biosVersion: '2102 (UEFI)',
-        biosDate: '2024-03-15',
-      },
-      network: {
-        interfaceName: netName,
-        ipAddress: ip,
-        macAddress: mac,
-        linkSpeedMbps: 2500,
-        rxBytesSec: 1450000,
-        txBytesSec: 230000,
-      },
+      gpu: gpuInfo,
+      motherboard: mbInfo,
+      network: netInfo,
     };
   });
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_TELEMETRY, async () => {
+    if (!isWindows()) {
+      throw new Error('System telemetry is only available on Windows');
+    }
+
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
-    const memUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
-    const cpuUsage = Math.floor(Math.random() * 30) + 15;
-    const diskRead = Math.floor(Math.random() * 45) + 5;
-    const diskWrite = Math.floor(Math.random() * 20) + 2;
+    const memUsage = totalMem > 0 ? Math.round(((totalMem - freeMem) / totalMem) * 100) : 0;
+
+    let cpuUsage = 0;
+    try {
+      const cpuPerf = await getCpuPerformance({ timeoutMs: 3000 });
+      if (cpuPerf !== null) {
+        cpuUsage = Math.round(cpuPerf);
+      }
+    } catch (err) {
+      console.warn('Failed to get CPU telemetry:', err);
+    }
+
+    let diskReadMb = 0;
+    let diskWriteMb = 0;
+    try {
+      const diskPerf = await getDiskPerformance({ timeoutMs: 3000 });
+      diskReadMb = Math.round((diskPerf.diskReadBytesSec / (1024 * 1024)) * 10) / 10;
+      diskWriteMb = Math.round((diskPerf.diskWriteBytesSec / (1024 * 1024)) * 10) / 10;
+    } catch (err) {
+      console.warn('Failed to get disk telemetry:', err);
+    }
 
     return {
       cpu: cpuUsage,
       memory: memUsage,
-      diskRead,
-      diskWrite,
+      diskRead: diskReadMb,
+      diskWrite: diskWriteMb,
     };
   });
 

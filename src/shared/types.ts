@@ -32,11 +32,11 @@ export interface OSInfo {
 export interface CPUInfo {
   manufacturer: string;
   brand: string;
-  speedGhz: number;
+  speedGhz: number | null;
   cores: number;
   physicalCores: number;
-  usagePercent: number;
-  tempC?: number;
+  usagePercent: number | null;
+  tempC?: number | null;
 }
 
 export interface MemoryInfo {
@@ -44,8 +44,8 @@ export interface MemoryInfo {
   usedBytes: number;
   freeBytes: number;
   usagePercent: number;
-  speedMhz?: number;
-  type?: string;
+  speedMhz?: number | null;
+  type?: string | null;
 }
 
 export interface DriveInfo {
@@ -56,31 +56,31 @@ export interface DriveInfo {
   totalBytes: number;
   usedBytes: number;
   freeBytes: number;
-  usagePercent: number;
+  usagePercent: number | null;
   fileSystem: string;
-  healthStatus: 'good' | 'warning' | 'critical';
+  healthStatus: 'good' | 'warning' | 'bad' | 'critical';
 }
 
 export interface GPUInfo {
   model: string;
-  vramMb: number;
-  driverVersion: string;
-  usagePercent: number;
-  tempC?: number;
+  vramMb: number | null;
+  driverVersion: string | null;
+  usagePercent: number | null;
+  tempC?: number | null;
 }
 
 export interface MotherboardInfo {
   manufacturer: string;
   model: string;
   biosVersion: string;
-  biosDate: string;
+  biosDate: string | null;
 }
 
 export interface NetworkInfo {
   interfaceName: string;
   ipAddress: string;
   macAddress: string;
-  linkSpeedMbps: number;
+  linkSpeedMbps: number | null;
   rxBytesSec: number;
   txBytesSec: number;
 }

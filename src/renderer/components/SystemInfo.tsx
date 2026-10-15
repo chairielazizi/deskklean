@@ -23,17 +23,20 @@ export const SystemInfo: React.FC = () => {
     cpu: 0, memory: 0, diskRead: 0, diskWrite: 0,
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
+      setError(null);
       const [sysSpecs, t] = await Promise.all([
         api.getSystemSpecs(),
         api.getTelemetry(),
       ]);
       setSpecs(sysSpecs);
       setTelemetry(t);
-    } catch (e) {
-      console.error('Failed to load system info:', e);
+    } catch (e: unknown) {
+      console.warn('Failed to load system info:', e);
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -53,6 +56,32 @@ export const SystemInfo: React.FC = () => {
     await loadData();
     setTimeout(() => setIsRefreshing(false), 500);
   };
+
+  if (error) {
+    return (
+      <div className="p-6 space-y-6 max-w-7xl mx-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white">System Information</h1>
+            <p className="text-sm text-slate-400 mt-1">
+              Hardware and software overview with real-time monitoring
+            </p>
+          </div>
+          <button
+            onClick={handleRefresh}
+            disabled={isRefreshing}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium border border-slate-700 transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+            Retry
+          </button>
+        </div>
+        <div className="rounded-xl bg-slate-900/60 border border-slate-800 p-8 text-center">
+          <p className="text-slate-300 font-medium">{error}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!specs) {
     return (
@@ -129,28 +158,39 @@ export const SystemInfo: React.FC = () => {
               <Cpu className="w-4 h-4 text-blue-400" />
               <span className="text-xs font-bold text-slate-300 uppercase">Processor</span>
             </div>
-            <span className="text-xs font-mono text-blue-400">{telemetry.cpu}%</span>
+            <span className="text-xs font-mono text-blue-400">
+              {telemetry.cpu !== null && telemetry.cpu !== undefined ? `${telemetry.cpu}%` : '—'}
+            </span>
           </div>
-          <h3 className="text-sm font-semibold text-white">{specs.cpu.brand}</h3>
-          <p className="text-xs text-slate-400 mt-1">{specs.cpu.manufacturer}</p>
+          <h3 className="text-sm font-semibold text-white">{specs.cpu.brand || 'Unknown Processor'}</h3>
+          <p className="text-xs text-slate-400 mt-1">{specs.cpu.manufacturer || 'Unknown Manufacturer'}</p>
           <div className="mt-3 space-y-1 text-xs text-slate-500">
             <div className="flex justify-between">
               <span>Cores</span>
-              <span className="text-slate-300">{specs.cpu.physicalCores}P + {specs.cpu.cores - specs.cpu.physicalCores}E</span>
+              <span className="text-slate-300">
+                {specs.cpu.physicalCores > 0
+                  ? `${specs.cpu.physicalCores} Cores (${specs.cpu.cores} Threads)`
+                  : `${specs.cpu.cores} Threads`}
+              </span>
             </div>
             <div className="flex justify-between">
               <span>Speed</span>
-              <span className="text-slate-300">{specs.cpu.speedGhz} GHz</span>
+              <span className="text-slate-300">
+                {specs.cpu.speedGhz !== null && specs.cpu.speedGhz !== undefined ? `${specs.cpu.speedGhz} GHz` : 'Unavailable'}
+              </span>
             </div>
-            {specs.cpu.tempC && (
-              <div className="flex justify-between">
-                <span>Temp</span>
-                <span className="text-slate-300">{specs.cpu.tempC}°C</span>
-              </div>
-            )}
+            <div className="flex justify-between">
+              <span>Temp</span>
+              <span className="text-slate-300">
+                {specs.cpu.tempC !== null && specs.cpu.tempC !== undefined ? `${specs.cpu.tempC}°C` : 'Unavailable'}
+              </span>
+            </div>
           </div>
           <div className="w-full bg-slate-800 h-1.5 rounded-full mt-3 overflow-hidden">
-            <div className="bg-blue-500 h-full transition-all duration-500" style={{ width: `${telemetry.cpu}%` }} />
+            <div
+              className="bg-blue-500 h-full transition-all duration-500"
+              style={{ width: `${Math.min(100, Math.max(0, telemetry.cpu || 0))}%` }}
+            />
           </div>
         </motion.div>
 
@@ -166,13 +206,16 @@ export const SystemInfo: React.FC = () => {
               <MemoryStick className="w-4 h-4 text-violet-400" />
               <span className="text-xs font-bold text-slate-300 uppercase">Memory</span>
             </div>
-            <span className="text-xs font-mono text-violet-400">{telemetry.memory}%</span>
+            <span className="text-xs font-mono text-violet-400">
+              {telemetry.memory !== null && telemetry.memory !== undefined ? `${telemetry.memory}%` : '—'}
+            </span>
           </div>
           <h3 className="text-sm font-semibold text-white">
             {formatBytes(specs.memory.usedBytes)} / {formatBytes(specs.memory.totalBytes)}
           </h3>
           <p className="text-xs text-slate-400 mt-1">
-            {specs.memory.type || 'DDR4'} {specs.memory.speedMhz ? `@ ${specs.memory.speedMhz} MHz` : ''}
+            {specs.memory.type && specs.memory.type !== 'Unknown' ? specs.memory.type : 'RAM'}
+            {specs.memory.speedMhz ? ` @ ${specs.memory.speedMhz} MHz` : ''}
           </p>
           <div className="mt-3 space-y-1 text-xs text-slate-500">
             <div className="flex justify-between">
@@ -185,7 +228,10 @@ export const SystemInfo: React.FC = () => {
             </div>
           </div>
           <div className="w-full bg-slate-800 h-1.5 rounded-full mt-3 overflow-hidden">
-            <div className="bg-violet-500 h-full transition-all duration-500" style={{ width: `${telemetry.memory}%` }} />
+            <div
+              className="bg-violet-500 h-full transition-all duration-500"
+              style={{ width: `${Math.min(100, Math.max(0, telemetry.memory || 0))}%` }}
+            />
           </div>
         </motion.div>
 
@@ -202,19 +248,23 @@ export const SystemInfo: React.FC = () => {
               <span className="text-xs font-bold text-slate-300 uppercase">Graphics</span>
             </div>
           </div>
-          <h3 className="text-sm font-semibold text-white">{specs.gpu.model}</h3>
-          <p className="text-xs text-slate-400 mt-1">Driver: {specs.gpu.driverVersion}</p>
+          <h3 className="text-sm font-semibold text-white">{specs.gpu.model || 'Unknown Graphics'}</h3>
+          <p className="text-xs text-slate-400 mt-1">
+            Driver: {specs.gpu.driverVersion || 'Unavailable'}
+          </p>
           <div className="mt-3 space-y-1 text-xs text-slate-500">
             <div className="flex justify-between">
               <span>VRAM</span>
-              <span className="text-slate-300">{specs.gpu.vramMb} MB</span>
+              <span className="text-slate-300">
+                {specs.gpu.vramMb !== null && specs.gpu.vramMb !== undefined ? `${specs.gpu.vramMb} MB` : 'Unavailable'}
+              </span>
             </div>
-            {specs.gpu.tempC && (
-              <div className="flex justify-between">
-                <span>Temp</span>
-                <span className="text-slate-300">{specs.gpu.tempC}°C</span>
-              </div>
-            )}
+            <div className="flex justify-between">
+              <span>Temp</span>
+              <span className="text-slate-300">
+                {specs.gpu.tempC !== null && specs.gpu.tempC !== undefined ? `${specs.gpu.tempC}°C` : 'Unavailable'}
+              </span>
+            </div>
           </div>
         </motion.div>
 
@@ -230,30 +280,38 @@ export const SystemInfo: React.FC = () => {
             <span className="text-xs font-bold text-slate-300 uppercase">Storage</span>
           </div>
           <div className="space-y-3">
-            {specs.drives.map((drive) => (
-              <div key={drive.id}>
-                <div className="flex items-center justify-between text-xs mb-1">
-                  <span className="text-slate-300">{drive.label} ({drive.mount})</span>
-                  <span className="text-slate-400">{drive.usagePercent}%</span>
+            {specs.drives && specs.drives.length > 0 ? (
+              specs.drives.map((drive) => (
+                <div key={drive.id}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="text-slate-300">
+                      {drive.label} ({drive.mount}){drive.type && drive.type !== 'Unknown' ? ` · ${drive.type}` : ''}
+                    </span>
+                    <span className="text-slate-400">
+                      {drive.usagePercent !== null && drive.usagePercent !== undefined ? `${drive.usagePercent}%` : '—'}
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        (drive.usagePercent ?? 0) > 90
+                          ? 'bg-rose-500'
+                          : (drive.usagePercent ?? 0) > 70
+                          ? 'bg-amber-500'
+                          : 'bg-cyan-500'
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(0, drive.usagePercent ?? 0))}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
+                    <span>{formatBytes(drive.usedBytes)} used</span>
+                    <span>{formatBytes(drive.freeBytes)} free</span>
+                  </div>
                 </div>
-                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${
-                      drive.usagePercent > 90
-                        ? 'bg-rose-500'
-                        : drive.usagePercent > 70
-                        ? 'bg-amber-500'
-                        : 'bg-cyan-500'
-                    }`}
-                    style={{ width: `${drive.usagePercent}%` }}
-                  />
-                </div>
-                <div className="flex justify-between text-[10px] text-slate-500 mt-0.5">
-                  <span>{formatBytes(drive.usedBytes)} used</span>
-                  <span>{formatBytes(drive.freeBytes)} free</span>
-                </div>
-              </div>
-            ))}
+              ))
+            ) : (
+              <p className="text-xs text-slate-500">No drives detected</p>
+            )}
           </div>
         </motion.div>
 
@@ -268,16 +326,22 @@ export const SystemInfo: React.FC = () => {
             <CircuitBoard className="w-4 h-4 text-amber-400" />
             <span className="text-xs font-bold text-slate-300 uppercase">Motherboard</span>
           </div>
-          <h3 className="text-sm font-semibold text-white">{specs.motherboard.manufacturer}</h3>
-          <p className="text-xs text-slate-400 mt-1">{specs.motherboard.model}</p>
+          <h3 className="text-sm font-semibold text-white">{specs.motherboard.manufacturer || 'Unknown Manufacturer'}</h3>
+          <p className="text-xs text-slate-400 mt-1">{specs.motherboard.model || 'Unknown Model'}</p>
           <div className="mt-3 space-y-1 text-xs text-slate-500">
             <div className="flex justify-between">
               <span>BIOS</span>
-              <span className="text-slate-300">{specs.motherboard.biosVersion}</span>
+              <span className="text-slate-300">{specs.motherboard.biosVersion || 'Unavailable'}</span>
             </div>
             <div className="flex justify-between">
               <span>BIOS Date</span>
-              <span className="text-slate-300">{specs.motherboard.biosDate}</span>
+              <span className="text-slate-300">
+                {specs.motherboard.biosDate
+                  ? specs.motherboard.biosDate.includes('T')
+                    ? specs.motherboard.biosDate.split('T')[0]
+                    : specs.motherboard.biosDate
+                  : 'Unavailable'}
+              </span>
             </div>
           </div>
         </motion.div>
@@ -293,16 +357,20 @@ export const SystemInfo: React.FC = () => {
             <Wifi className="w-4 h-4 text-purple-400" />
             <span className="text-xs font-bold text-slate-300 uppercase">Network</span>
           </div>
-          <h3 className="text-sm font-semibold text-white">{specs.network.interfaceName}</h3>
-          <p className="text-xs text-slate-400 mt-1">{specs.network.ipAddress}</p>
+          <h3 className="text-sm font-semibold text-white">{specs.network.interfaceName || 'Unknown Network Adapter'}</h3>
+          <p className="text-xs text-slate-400 mt-1">{specs.network.ipAddress || 'Unavailable'}</p>
           <div className="mt-3 space-y-1 text-xs text-slate-500">
             <div className="flex justify-between">
               <span>MAC</span>
-              <span className="text-slate-300 font-mono">{specs.network.macAddress}</span>
+              <span className="text-slate-300 font-mono">{specs.network.macAddress || 'Unavailable'}</span>
             </div>
             <div className="flex justify-between">
               <span>Link Speed</span>
-              <span className="text-slate-300">{specs.network.linkSpeedMbps} Mbps</span>
+              <span className="text-slate-300">
+                {specs.network.linkSpeedMbps !== null && specs.network.linkSpeedMbps !== undefined
+                  ? `${specs.network.linkSpeedMbps} Mbps`
+                  : 'Unavailable'}
+              </span>
             </div>
           </div>
         </motion.div>
@@ -318,37 +386,57 @@ export const SystemInfo: React.FC = () => {
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/60">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
               <span>CPU</span>
-              <span className="font-mono font-bold text-blue-400">{telemetry.cpu}%</span>
+              <span className="font-mono font-bold text-blue-400">
+                {telemetry.cpu !== null && telemetry.cpu !== undefined ? `${telemetry.cpu}%` : '—'}
+              </span>
             </div>
             <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-              <div className="bg-blue-500 h-full transition-all duration-500" style={{ width: `${telemetry.cpu}%` }} />
+              <div
+                className="bg-blue-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, telemetry.cpu || 0))}%` }}
+              />
             </div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/60">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
               <span>Memory</span>
-              <span className="font-mono font-bold text-violet-400">{telemetry.memory}%</span>
+              <span className="font-mono font-bold text-violet-400">
+                {telemetry.memory !== null && telemetry.memory !== undefined ? `${telemetry.memory}%` : '—'}
+              </span>
             </div>
             <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-              <div className="bg-violet-500 h-full transition-all duration-500" style={{ width: `${telemetry.memory}%` }} />
+              <div
+                className="bg-violet-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, telemetry.memory || 0))}%` }}
+              />
             </div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/60">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
               <span>Disk Read</span>
-              <span className="font-mono text-cyan-400 font-bold">{telemetry.diskRead} MB/s</span>
+              <span className="font-mono text-cyan-400 font-bold">
+                {telemetry.diskRead !== null && telemetry.diskRead !== undefined ? `${telemetry.diskRead} MB/s` : '—'}
+              </span>
             </div>
             <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-              <div className="bg-cyan-500 h-full transition-all duration-500" style={{ width: `${Math.min(100, telemetry.diskRead * 2)}%` }} />
+              <div
+                className="bg-cyan-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, (telemetry.diskRead || 0) * 2))}%` }}
+              />
             </div>
           </div>
           <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/60">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
               <span>Disk Write</span>
-              <span className="font-mono text-emerald-400 font-bold">{telemetry.diskWrite} MB/s</span>
+              <span className="font-mono text-emerald-400 font-bold">
+                {telemetry.diskWrite !== null && telemetry.diskWrite !== undefined ? `${telemetry.diskWrite} MB/s` : '—'}
+              </span>
             </div>
             <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-              <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${Math.min(100, telemetry.diskWrite * 5)}%` }} />
+              <div
+                className="bg-emerald-500 h-full transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, (telemetry.diskWrite || 0) * 5))}%` }}
+              />
             </div>
           </div>
         </div>
