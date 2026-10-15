@@ -1,6 +1,7 @@
 import path from 'path';
-import { runPowerShell, isWindows } from './powershell';
+import { runPowerShell, parseJsonSafe, isWindows } from './powershell';
 import { readKeyValues, decodeStartupApproved } from './registry';
+import { warnOnce } from './log';
 import { StartupItem, StartupImpact } from '../../shared/types';
 
 interface RawStartupFolderItem {
@@ -142,11 +143,7 @@ async function queryStartupFolders(): Promise<RawStartupFolderItem[]> {
   `.trim();
 
   const raw = await runPowerShell(script);
-  if (!raw || raw.trim().length === 0) {
-    return [];
-  }
-
-  const parsed = JSON.parse(raw);
+  const parsed = parseJsonSafe<unknown>(raw, [], 'startup:folders');
   if (Array.isArray(parsed)) {
     return parsed as RawStartupFolderItem[];
   }
@@ -185,11 +182,7 @@ async function queryScheduledTasks(): Promise<RawScheduledTaskItem[]> {
   `.trim();
 
   const raw = await runPowerShell(script);
-  if (!raw || raw.trim().length === 0) {
-    return [];
-  }
-
-  const parsed = JSON.parse(raw);
+  const parsed = parseJsonSafe<unknown>(raw, [], 'startup:scheduledTasks');
   if (Array.isArray(parsed)) {
     return parsed as RawScheduledTaskItem[];
   }
@@ -205,8 +198,28 @@ async function queryScheduledTasks(): Promise<RawScheduledTaskItem[]> {
  */
 async function queryEvent101Impacts(): Promise<Map<string, number>> {
   const script = `
+    $log = 'Microsoft-Windows-Diagnostics-Performance/Operational';
+    $events = @();
     try {
-      Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-Diagnostics-Performance/Operational'; Id = 101 } -MaxEvents 200 -ErrorAction Stop | ForEach-Object {
+      $events = @(Get-WinEvent -LogName $log -FilterXPath '*[System[EventID=101]]' -MaxEvents 200 -ErrorAction Stop);
+    } catch {
+      # "no events found" is not an error, and this log may need elevation
+      try {
+        $events = @(Get-WinEvent -LogName $log -MaxEvents 500 -ErrorAction Stop |
+          Where-Object { $_.Id -eq 101 });
+      } catch {
+        $msg = $_.Exception.Message;
+        if ($msg -and $msg -notmatch 'No events|access.*denied|permission|unauthorized') {
+          [Console]::Error.WriteLine($msg);
+        }
+        $events = @();
+      }
+    }
+
+    if ($events.Count -eq 0) {
+      '[]'
+    } else {
+      $parsed = @($events | ForEach-Object {
         $xml = [xml]$_.ToXml();
         $dataNodes = $xml.Event.EventData.Data;
         $fileName = '';
@@ -226,19 +239,24 @@ async function queryEvent101Impacts(): Promise<Map<string, number>> {
           TotalTime = $totalTime;
           DegradationTime = $degradationTime;
         }
-      } | ConvertTo-Json -Depth 2 -Compress
-    } catch {
-      Write-Warning $_.Exception.Message;
-      '[]'
+      });
+      if ($parsed.Count -eq 0) {
+        '[]'
+      } else {
+        $parsed | ConvertTo-Json -Depth 2 -Compress
+      }
     }
   `.trim();
 
-  const raw = await runPowerShell(script);
-  if (!raw || raw.trim().length === 0) {
+  let raw = '';
+  try {
+    raw = await runPowerShell(script);
+  } catch (err) {
+    warnOnce('event101:unavailable', 'Failed to query Diagnostics-Performance Event 101 log', err);
     return new Map<string, number>();
   }
 
-  const parsed = JSON.parse(raw);
+  const parsed = parseJsonSafe<unknown>(raw, [], 'event101:unavailable');
   const events: RawEvent101[] = Array.isArray(parsed)
     ? (parsed as RawEvent101[])
     : parsed && typeof parsed === 'object'
@@ -287,11 +305,7 @@ async function queryPublishers(exePaths: string[]): Promise<Record<string, strin
   `.trim();
 
   const raw = await runPowerShell(script);
-  if (!raw || raw.trim().length === 0) {
-    return {};
-  }
-
-  const parsed = JSON.parse(raw);
+  const parsed = parseJsonSafe<Record<string, string>>(raw, {}, 'publisher:lookup');
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     return parsed as Record<string, string>;
   }
@@ -370,7 +384,7 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run').catch((err) => {
-      console.warn('Failed to read HKLM StartupApproved\\Run:', err);
+      warnOnce('startup:hklm-approved-run', 'Failed to read HKLM StartupApproved\\Run', err);
       return {} as Record<string, unknown>;
     }),
     readKeyValues('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32').catch((err) => {
@@ -390,7 +404,7 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       return [];
     }),
     queryEvent101Impacts().catch((err) => {
-      console.warn('Failed to query Diagnostics-Performance Event 101 log:', err);
+      warnOnce('event101:unavailable', 'Failed to query Diagnostics-Performance Event 101 log', err);
       return new Map<string, number>();
     }),
   ]);
@@ -419,7 +433,7 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       id: `hkcu-runonce-${slugify(name)}`,
       name,
       command: val,
-      location: 'HKCU_RUN',
+      location: 'HKCU_RUNONCE',
       source: 'registry',
       enabled: true,
     });
@@ -447,7 +461,7 @@ export async function getStartupItems(): Promise<StartupItem[]> {
       id: `hklm-runonce-${slugify(name)}`,
       name,
       command: val,
-      location: 'HKLM_RUN',
+      location: 'HKLM_RUNONCE',
       source: 'registry',
       enabled: true,
     });
@@ -520,7 +534,7 @@ export async function getStartupItems(): Promise<StartupItem[]> {
   try {
     publisherMap = await queryPublishers(distinctExePaths);
   } catch (err) {
-    console.warn('Failed to resolve publishers:', err);
+    warnOnce('publisher:lookup', 'Failed to resolve publishers', err);
   }
 
   // 3. Assemble final StartupItem models with real publisher and boot impact

@@ -1,4 +1,4 @@
-import { runPowerShell, isWindows } from './powershell';
+import { runPowerShell, parseJsonSafe, isWindows } from './powershell';
 
 export type RegistryHive = 'HKCU' | 'HKLM';
 
@@ -66,10 +66,7 @@ export async function readKeyValues(
 
   try {
     const raw = await runPowerShell(script);
-    if (!raw || raw.trim().length === 0) {
-      return {};
-    }
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonSafe<unknown>(raw, {}, 'registry:readKeyValues');
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
@@ -126,10 +123,11 @@ export async function readValue(
 
   try {
     const raw = await runPowerShell(script);
-    if (!raw || raw.trim().length === 0) {
-      return { exists: false };
-    }
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonSafe<{ exists?: boolean; type?: string; data?: unknown }>(
+      raw,
+      { exists: false },
+      'registry:readValue'
+    );
     if (parsed && typeof parsed === 'object' && parsed.exists === true) {
       return {
         exists: true,
@@ -211,10 +209,7 @@ export async function listSubKeys(
 
   try {
     const raw = await runPowerShell(script);
-    if (!raw || raw.trim().length === 0) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
+    const parsed = parseJsonSafe<unknown>(raw, [], 'registry:listSubKeys');
     if (Array.isArray(parsed)) {
       return parsed.map((x) => String(x));
     }

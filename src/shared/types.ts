@@ -184,7 +184,9 @@ export interface RegistryBackup {
 export type StartupImpact = 'high' | 'medium' | 'low' | 'none';
 export type StartupLocation =
   | 'HKCU_RUN'
+  | 'HKCU_RUNONCE'
   | 'HKLM_RUN'
+  | 'HKLM_RUNONCE'
   | 'STARTUP_FOLDER'
   | 'SCHEDULED_TASK'
   | 'SERVICE';

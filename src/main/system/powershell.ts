@@ -1,4 +1,5 @@
 import { spawn, ChildProcess } from 'child_process';
+import { warnOnce } from './log';
 
 export interface PowerShellOptions {
   timeoutMs?: number;
@@ -28,7 +29,7 @@ export const runPowerShell = (
   const timeoutMs = opts?.timeoutMs ?? 15000;
 
   return new Promise<string>((resolve, reject) => {
-    const fullScript = `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${script}`;
+    const fullScript = `$ErrorActionPreference = 'Stop'; $WarningPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${script}`;
 
     let child: ChildProcess;
     try {
@@ -127,18 +128,7 @@ export const runPowerShellJson = async <T>(
 
   const raw = await runPowerShell(script, opts);
 
-  if (!raw || raw.trim().length === 0) {
-    // Sane empty value: return empty array without throwing a JSON parse error
-    return [] as unknown as T;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to parse PowerShell JSON output: ${message}\nOutput: ${raw}`);
-  }
+  const parsed = parseJsonSafe<unknown>(raw, null, 'powershell:json');
 
   if (parsed === null || parsed === undefined) {
     return [] as unknown as T;
@@ -150,3 +140,29 @@ export const runPowerShellJson = async <T>(
 
   return [parsed] as unknown as T;
 };
+
+/**
+ * Safely parses a JSON string.
+ * - Returns `fallback` when raw is empty or whitespace.
+ * - On a JSON.parse failure, calls warnOnce with the context and the first 200 chars of raw,
+ *   then returns `fallback`.
+ * - Never throws.
+ *
+ * @param raw - The raw JSON string to parse.
+ * @param fallback - The value to return when empty/whitespace or upon parse error.
+ * @param context - Context string used as the key for warnOnce logging.
+ * @returns Parsed JSON object/array or the fallback value.
+ */
+export function parseJsonSafe<T>(raw: string, fallback: T, context: string): T {
+  if (!raw || raw.trim().length === 0) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err: unknown) {
+    warnOnce(context, raw.slice(0, 200), err);
+    return fallback;
+  }
+}
+

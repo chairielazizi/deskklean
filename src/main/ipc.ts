@@ -216,7 +216,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           console.warn('Failed to query Win32_Processor:', e);
           return [];
         }),
-        getCpuPerformance({ timeoutMs: 3000 }).catch((e) => {
+        getCpuPerformance({ timeoutMs: 8000 }).catch((e) => {
           console.warn('Failed to query CPU performance:', e);
           return null;
         }),
@@ -569,7 +569,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
     let cpuUsage = 0;
     try {
-      const cpuPerf = await getCpuPerformance({ timeoutMs: 3000 });
+      const cpuPerf = await getCpuPerformance({ timeoutMs: 8000 });
       if (cpuPerf !== null) {
         cpuUsage = Math.round(cpuPerf);
       }
@@ -580,7 +580,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     let diskReadMb = 0;
     let diskWriteMb = 0;
     try {
-      const diskPerf = await getDiskPerformance({ timeoutMs: 3000 });
+      const diskPerf = await getDiskPerformance({ timeoutMs: 8000 });
       diskReadMb = Math.round((diskPerf.diskReadBytesSec / (1024 * 1024)) * 10) / 10;
       diskWriteMb = Math.round((diskPerf.diskWriteBytesSec / (1024 * 1024)) * 10) / 10;
     } catch (err) {

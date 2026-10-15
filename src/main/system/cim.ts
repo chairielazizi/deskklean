@@ -1,4 +1,5 @@
 import { runPowerShellJson } from './powershell';
+import { warnOnce } from './log';
 
 export interface QueryCimOptions {
   namespace?: string;
@@ -552,7 +553,7 @@ export const getCpuTemperature = async (
     }
     return tempC;
   } catch (err) {
-    console.warn('Failed to query CPU temperature:', err);
+    warnOnce('cim:MSAcpi_ThermalZoneTemperature', 'Failed to query CPU temperature', err);
     return null;
   }
 };
