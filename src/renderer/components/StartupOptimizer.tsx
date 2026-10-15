@@ -57,7 +57,7 @@ export const StartupOptimizer: React.FC = () => {
   const highImpactCount = items.filter((i) => i.impact === 'high' && i.enabled).length;
   const totalBootImpact = items
     .filter((i) => i.enabled)
-    .reduce((sum, i) => sum + i.estimatedBootImpactMs, 0);
+    .reduce((sum, i) => sum + (i.estimatedBootImpactMs ?? 0), 0);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -145,7 +145,10 @@ export const StartupOptimizer: React.FC = () => {
                       </div>
                       <p className="text-xs text-slate-500 truncate">{item.command}</p>
                       <p className="text-[10px] text-slate-600 mt-0.5">
-                        {item.publisher} &middot; {item.location} &middot; +{item.estimatedBootImpactMs}ms
+                        {item.publisher} &middot; {item.location} &middot;{' '}
+                        {item.estimatedBootImpactMs !== null
+                          ? `+${item.estimatedBootImpactMs}ms`
+                          : 'Unavailable'}
                       </p>
                     </div>
                   </div>

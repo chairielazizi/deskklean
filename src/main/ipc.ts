@@ -28,6 +28,7 @@ import {
   ActivityItem,
 } from '../shared/types';
 import { isWindows } from './system/powershell';
+import { getStartupItems } from './system/startup';
 import {
   getProcessors,
   getPhysicalMemory,
@@ -854,7 +855,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- Startup Optimizer ---
-  let startupItems: StartupItem[] = [
+  let startupItems: (StartupItem & { bootDelaySec?: number })[] = [
     {
       id: 'startup-1',
       name: 'Spotify Web Helper & Launcher',
@@ -935,7 +936,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   ];
 
   ipcMain.handle(IPC_CHANNELS.STARTUP_GET_ITEMS, async (): Promise<StartupItem[]> => {
-    return startupItems;
+    return getStartupItems();
   });
 
   ipcMain.handle(IPC_CHANNELS.STARTUP_TOGGLE_ITEM, async (_, id: string, enabled: boolean) => {

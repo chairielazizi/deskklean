@@ -197,8 +197,8 @@ export interface StartupItem {
   location: StartupLocation;
   impact: StartupImpact;
   enabled: boolean;
-  bootDelaySec?: number;
-  estimatedBootImpactMs: number;
+  estimatedBootImpactMs: number | null;
+  source?: 'registry' | 'folder' | 'task';
 }
 
 // App Remover

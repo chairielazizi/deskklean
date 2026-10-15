@@ -312,7 +312,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'HKCU_RUN',
       impact: 'high',
       enabled: false,
-      bootDelaySec: 0,
       estimatedBootImpactMs: 1850,
     },
     {
@@ -323,7 +322,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'HKCU_RUN',
       impact: 'high',
       enabled: true,
-      bootDelaySec: 15,
       estimatedBootImpactMs: 2200,
     },
     {
@@ -334,7 +332,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'HKCU_RUN',
       impact: 'medium',
       enabled: true,
-      bootDelaySec: 0,
       estimatedBootImpactMs: 950,
     },
     {
@@ -345,7 +342,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'HKCU_RUN',
       impact: 'high',
       enabled: false,
-      bootDelaySec: 0,
       estimatedBootImpactMs: 2400,
     },
     {
@@ -356,7 +352,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'HKLM_RUN',
       impact: 'low',
       enabled: true,
-      bootDelaySec: 0,
       estimatedBootImpactMs: 180,
     },
     {
@@ -367,7 +362,6 @@ const mockAPI: DeskKleanAPI = {
       location: 'SCHEDULED_TASK',
       impact: 'medium',
       enabled: false,
-      bootDelaySec: 30,
       estimatedBootImpactMs: 1200,
     },
   ],
