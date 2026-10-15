@@ -9,7 +9,6 @@ interface ElevationPromptProps {
 
 export const ElevationPrompt: React.FC<ElevationPromptProps> = ({ onClose }): React.JSX.Element => {
   const [isRelaunching, setIsRelaunching] = useState<boolean>(false);
-  const [isDismissing, setIsDismissing] = useState<boolean>(false);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [inlineMessage, setInlineMessage] = useState<string | null>(null);
 
@@ -21,26 +20,17 @@ export const ElevationPrompt: React.FC<ElevationPromptProps> = ({ onClose }): Re
       const res = await api.relaunchElevated();
       if (!res.success) {
         setInlineError(res.message || 'Failed to restart with administrator rights.');
-      } else if (res.message) {
-        setInlineMessage(res.message);
+        setIsRelaunching(false);
       }
     } catch (err) {
       setInlineError(err instanceof Error ? err.message : String(err));
-    } finally {
       setIsRelaunching(false);
     }
   };
 
-  const handleContinue = async (): Promise<void> => {
-    setIsDismissing(true);
-    try {
-      await api.saveSettings({ elevationPromptDismissed: true });
-    } catch (err) {
-      console.error('Failed to save settings:', err);
-    } finally {
-      setIsDismissing(false);
-      onClose();
-    }
+  const handleContinue = (): void => {
+    // Dismiss prompt for this session without permanently suppressing future launches
+    onClose();
   };
 
   return (
@@ -95,16 +85,15 @@ export const ElevationPrompt: React.FC<ElevationPromptProps> = ({ onClose }): Re
           <button
             type="button"
             onClick={handleContinue}
-            disabled={isRelaunching || isDismissing}
+            disabled={isRelaunching}
             className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 hover:text-white font-medium text-sm transition-colors border border-slate-700/80 flex items-center justify-center gap-2 cursor-pointer"
           >
-            {isDismissing && <Loader2 className="w-4 h-4 animate-spin" />}
             Continue without administrator
           </button>
           <button
             type="button"
             onClick={handleRestart}
-            disabled={isRelaunching || isDismissing}
+            disabled={isRelaunching}
             className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-semibold text-sm transition-colors flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 cursor-pointer"
           >
             {isRelaunching && <Loader2 className="w-4 h-4 animate-spin" />}

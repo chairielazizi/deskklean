@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../apiClient';
 import { StartupItem } from '../../shared/types';
+import { dataCache } from '../utils/dataCache';
 import {
   Zap,
   Loader2,
@@ -12,6 +13,7 @@ import {
   Rocket,
   HardDrive,
   Info,
+  RefreshCw,
 } from 'lucide-react';
 
 const IMPACT_COLORS: Record<string, { bg: string; text: string; bar: string }> = {
@@ -22,23 +24,45 @@ const IMPACT_COLORS: Record<string, { bg: string; text: string; bar: string }> =
 };
 
 export const StartupOptimizer: React.FC = () => {
-  const [items, setItems] = useState<StartupItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const cached = dataCache.getStartupItems();
+  const [items, setItems] = useState<StartupItem[]>(() => cached ?? []);
+  const [isLoading, setIsLoading] = useState(() => !cached);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [isElevated, setIsElevated] = useState(true);
   const [isRelaunching, setIsRelaunching] = useState(false);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [relaunchMessage, setRelaunchMessage] = useState<string | null>(null);
 
-  const loadItems = async () => {
-    setIsLoading(true);
+  const loadItems = async (force = false) => {
+    const existing = dataCache.getStartupItems();
+    if (!force && existing && !dataCache.isStartupItemsStale()) {
+      setItems(existing);
+      return;
+    }
+
+    if (!existing) {
+      setIsLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
+
     try {
       const result = await api.getStartupItems();
+      dataCache.setStartupItems(result);
       setItems(result);
     } catch (e) {
       console.error('Failed to load startup items:', e);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
     }
-    setIsLoading(false);
+  };
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    await loadItems(true);
+    setTimeout(() => setIsRefreshing(false), 500);
   };
 
   const handleRelaunch = async () => {
@@ -68,6 +92,7 @@ export const StartupOptimizer: React.FC = () => {
     try {
       const res = await api.toggleStartupItem(id, enabled);
       if (res.success) {
+        dataCache.updateStartupItem(id, enabled);
         setItems((prev) =>
           prev.map((i) => (i.id === id ? { ...i, enabled } : i))
         );
@@ -98,11 +123,21 @@ export const StartupOptimizer: React.FC = () => {
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-white">Startup Optimizer</h1>
-        <p className="text-sm text-slate-400 mt-1">
-          Manage programs that launch at startup to speed up boot time
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Startup Optimizer</h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Manage programs that launch at startup to speed up boot time
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing || isLoading}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium border border-slate-700 transition-all disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
       </div>
 
       {/* Summary */}

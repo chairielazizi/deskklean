@@ -143,9 +143,16 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- System Specs & Telemetry ---
+  let cachedSystemSpecs: { data: SystemSpecs; timestamp: number } | null = null;
+  const SYSTEM_SPECS_CACHE_TTL_MS = 60 * 1000; // 60s cache in main process
+
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_SPECS, async (): Promise<SystemSpecs> => {
     if (!isWindows()) {
       throw new Error('System specifications are only available on Windows');
+    }
+
+    if (cachedSystemSpecs && Date.now() - cachedSystemSpecs.timestamp < SYSTEM_SPECS_CACHE_TTL_MS) {
+      return cachedSystemSpecs.data;
     }
 
     // 1. Operating System
@@ -548,7 +555,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       console.warn('Failed to assemble network section:', err);
     }
 
-    return {
+    const result: SystemSpecs = {
       os: osInfo,
       cpu: cpuInfo,
       memory: memoryInfo,
@@ -557,6 +564,8 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       motherboard: mbInfo,
       network: netInfo,
     };
+    cachedSystemSpecs = { data: result, timestamp: Date.now() };
+    return result;
   });
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_TELEMETRY, async () => {
@@ -862,18 +871,32 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CHANNELS.APP_RELAUNCH_ELEVATED, async (): Promise<{ success: boolean; message?: string }> => {
     try {
-      const args = app.isPackaged ? [] : [app.getAppPath()];
-      await relaunchElevated(process.execPath, args);
-      if (app.isPackaged) {
-        setTimeout(() => app.quit(), 1000);
-        return { success: true };
-      } else {
-        return {
-          success: true,
-          message:
-            'An elevated window has opened. Keep this window open so the dev server stays available, then close it when you are done.',
-        };
+      // In portable packaged mode, relaunch the portable container executable,
+      // NOT the extracted child in Temp which gets deleted when the old process exits!
+      let targetExe = process.execPath;
+      if (app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE) {
+        targetExe = process.env.PORTABLE_EXECUTABLE_FILE;
       }
+
+      const args: string[] = [];
+      if (!app.isPackaged) {
+        args.push(app.getAppPath());
+      }
+      args.push('--relaunch-elevated');
+
+      // Request UAC elevation; awaits user acceptance on the UAC prompt
+      await relaunchElevated(targetExe, args);
+
+      // Once elevated process is spawned, immediately release the singleton lock
+      // so the new elevated instance acquires it without conflict.
+      app.releaseSingleInstanceLock();
+
+      // Close the current window and exit the unelevated process cleanly.
+      setTimeout(() => {
+        app.exit(0);
+      }, 150);
+
+      return { success: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { success: false, message };
@@ -1014,13 +1037,22 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     },
   ];
 
+  let cachedStartupItems: { data: StartupItem[]; timestamp: number } | null = null;
+  const STARTUP_ITEMS_CACHE_TTL_MS = 30 * 1000; // 30s cache in main process
+
   ipcMain.handle(IPC_CHANNELS.STARTUP_GET_ITEMS, async (): Promise<StartupItem[]> => {
-    return getStartupItems();
+    if (cachedStartupItems && Date.now() - cachedStartupItems.timestamp < STARTUP_ITEMS_CACHE_TTL_MS) {
+      return cachedStartupItems.data;
+    }
+    const items = await getStartupItems();
+    cachedStartupItems = { data: items, timestamp: Date.now() };
+    return items;
   });
 
   ipcMain.handle(
     IPC_CHANNELS.STARTUP_TOGGLE_ITEM,
     async (_, id: string, enabled: boolean): Promise<{ success: boolean; message?: string }> => {
+      cachedStartupItems = null; // Invalidate cache on change
       const result = await toggleStartupItem(id, enabled);
       if (result.success) {
         logActivity({

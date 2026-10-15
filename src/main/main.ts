@@ -134,12 +134,23 @@ function createWindow(): void {
   });
 }
 
-// Ensure single instance
-const gotTheLock = app.requestSingleInstanceLock();
-debugLog('app.requestSingleInstanceLock() result: ' + gotTheLock);
+// Ensure single instance with grace retry period for yielding process during elevation
+let gotTheLock = app.requestSingleInstanceLock();
+debugLog('app.requestSingleInstanceLock() initial result: ' + gotTheLock);
 
 if (!gotTheLock) {
-  debugLog('Could not get single instance lock! Quitting.');
+  debugLog('Single instance lock not acquired initially. Retrying for up to 2s to allow yielding process to release...');
+  const retryStart = Date.now();
+  while (!gotTheLock && Date.now() - retryStart < 2000) {
+    const end = Date.now() + 150;
+    while (Date.now() < end) {}
+    gotTheLock = app.requestSingleInstanceLock();
+    debugLog('app.requestSingleInstanceLock() retry result: ' + gotTheLock);
+  }
+}
+
+if (!gotTheLock) {
+  debugLog('Could not get single instance lock after retries! Quitting.');
   app.quit();
 } else {
   app.on('second-instance', () => {

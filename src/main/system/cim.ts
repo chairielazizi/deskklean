@@ -552,7 +552,32 @@ export const getCpuTemperature = async (
       return null;
     }
     return tempC;
-  } catch (err) {
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const isAccessDenied =
+      msg.includes('0x80041003') || msg.toLowerCase().includes('access denied');
+    const isUnsupported =
+      msg.includes('0x8004100c') ||
+      msg.includes('0x80041010') ||
+      msg.toLowerCase().includes('not supported') ||
+      msg.toLowerCase().includes('invalid class');
+
+    if (isAccessDenied) {
+      warnOnce(
+        'cim:MSAcpi_ThermalZoneTemperature',
+        'CPU temperature query unavailable via ACPI WMI (root/wmi requires administrator privileges). Returning null.'
+      );
+      return null;
+    }
+
+    if (isUnsupported) {
+      warnOnce(
+        'cim:MSAcpi_ThermalZoneTemperature',
+        'CPU temperature query not supported by ACPI thermal zone on this motherboard. Returning null.'
+      );
+      return null;
+    }
+
     warnOnce('cim:MSAcpi_ThermalZoneTemperature', 'Failed to query CPU temperature', err);
     return null;
   }

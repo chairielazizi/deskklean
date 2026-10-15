@@ -143,3 +143,36 @@ The dev server logged no transform errors while serving those modules.
   - Added robust single-instance and second-instance handling: when another launch is attempted, the existing window is restored and focused, with a `createWindow()` fallback if the window was closed.
   - Added a defensive `ready-to-show` fallback timeout to guarantee window visibility under any OS timing condition.
 
+### 5. Elevation Prompt Persistence & Admin Relaunch Conflict Fixes
+- **Problem A (Disappearing Launch Prompt)**: In `App.tsx`, the startup elevation modal was permanently gated behind `settings.elevationPromptDismissed === false`. Clicking "Continue without administrator" once persisted `true` to `settings.json`, suppressing the prompt on every subsequent launch.
+  - **Fix**: Removed the persistent dismissal lock. When `isElevated() === false`, the prompt displays on every launch. Clicking "Continue without administrator" dismisses it solely for the current session.
+- **Problem B (Old Window Sitting / Elevated Window Dying)**: When clicking "Restart as administrator", the old unelevated instance remained running in dev mode while holding `app.requestSingleInstanceLock()`. The new elevated instance called `requestSingleInstanceLock()`, received `false`, and immediately exited. In dev mode, the old window remained open without an elevated window opening. In packaged portable mode, launching the extracted temp child binary while the parent wrapper closed triggered directory deletion and instant crash.
+  - **Fix**:
+    1. In `src/main/ipc.ts`, when packaging in portable mode, `relaunchElevated` targets `process.env.PORTABLE_EXECUTABLE_FILE` (the portable launcher), not the transient temp binary.
+    2. Once `relaunchElevated` succeeds, the unelevated process calls `app.releaseSingleInstanceLock()` and cleanly exits (`app.exit(0)`).
+    3. In `src/main/main.ts`, `app.requestSingleInstanceLock()` includes a retry grace period (up to 2s) to allow a yielding parent process to release the lock cleanly.
+    4. In `package.json`, replaced `concurrently -k` with `concurrently --kill-others-on-fail` so Vite and the dev server stay running when the unelevated process yields to the elevated one.
+
+### 6. WMI CPU Temperature Permission (`MSAcpi_ThermalZoneTemperature` 0x80041003)
+- **Problem**: When running unelevated in dev or standard mode, querying CPU temperature triggered PowerShell error spam in console: `[cim:MSAcpi_ThermalZoneTemperature] Failed to query CPU temperature: Error: PowerShell execution failed (code 1): Get-CimInstance : Access denied ... HRESULT 0x80041003`.
+- **Root Cause**:
+  1. The WMI namespace `root\wmi` is restricted by Windows security ACLs to elevated administrative accounts. Standard user tokens receive `0x80041003` (Access Denied).
+  2. On modern desktop motherboards (such as AMD AM5 B650 / Ryzen 7000 desktop platforms), ACPI thermal zones are not implemented in motherboard BIOS DSDT tables anyway. Desktop thermal telemetry (Tctl/Tdie) is handled via internal CPU MSRs or Super I/O hardware sensors via ring-0 kernel drivers (such as HWiNFO or LibreHardwareMonitor), not through generic ACPI WMI.
+- **Impact & Fix**:
+  - CPU temperature is completely **negligible** for DeskKlean (it is solely a cosmetic telemetry metric in the System Specs dashboard, and the UI cleanly displays "Unavailable" when `null`).
+  - In `src/main/system/cim.ts`, updated `getCpuTemperature` to intercept `0x80041003` (Access Denied) and `0x8004100c` / `0x80041010` (Not Supported / Invalid Class) and log a graceful single-line note once via `warnOnce` instead of dumping raw multi-line PowerShell stack traces to stderr.
+
+### 7. Module Tab Navigation & Two-Tier Caching System
+- **Problem**:
+  1. Switching between sidebar tabs caused the entire app shell to unmount and show a full-screen `Loading DeskKlean...` screen for 300ms because of an artificial `setIsLoading(true)` timeout inside `handleNavigate`.
+  2. Navigating to System Info or Startup Optimizer, switching to another page, and coming back triggered a full page loader and executed heavy PowerShell CIM/registry queries repeatedly (~2-3s delay every visit).
+- **Fix**:
+  1. **Instant Module Switching**: Removed the artificial loading delay in `App.tsx`'s `handleNavigate`, allowing smooth Framer Motion transitions (`AnimatePresence`) between tabs without unmounting the app shell.
+  2. **Renderer Data Cache (`src/renderer/utils/dataCache.ts`)**:
+     - Created a client-side in-memory cache manager (`dataCache`) for `SystemSpecs` (5 min TTL) and `StartupItems` (2 min TTL).
+     - `SystemInfo` and `StartupOptimizer` initialize their component state directly from `dataCache`, rendering all cards and tables **instantly in 0ms** on revisit.
+     - Background revalidation occurs silently without blocking the UI if the cache becomes stale.
+     - In `StartupOptimizer`, toggling an item optimistically updates the cache (`updateStartupItem`), preserving the toggle state when switching away and back.
+     - Added an inline `Refresh` button in the header of `StartupOptimizer` (matching `SystemInfo`) to allow users to force a fresh scan on demand.
+  3. **Main Process IPC Cache (`src/main/ipc.ts`)**:
+     - Added in-memory TTL caching (60s for specs, 30s for startup items) to prevent redundant parallel PowerShell script executions. Cache is automatically invalidated when items are toggled.

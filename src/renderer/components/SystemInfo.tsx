@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { api } from '../apiClient';
 import { SystemSpecs } from '../../shared/types';
 import { formatBytes } from '../utils/format';
+import { dataCache } from '../utils/dataCache';
 import {
   Cpu,
   HardDrive,
@@ -18,25 +19,38 @@ import {
 } from 'lucide-react';
 
 export const SystemInfo: React.FC = () => {
-  const [specs, setSpecs] = useState<SystemSpecs | null>(null);
+  const [specs, setSpecs] = useState<SystemSpecs | null>(() => dataCache.getSystemSpecs());
   const [telemetry, setTelemetry] = useState<{ cpu: number; memory: number; diskRead: number; diskWrite: number }>({
     cpu: 0, memory: 0, diskRead: 0, diskWrite: 0,
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = async (force = false) => {
+    const cached = dataCache.getSystemSpecs();
+    if (!force && cached && !dataCache.isSystemSpecsStale()) {
+      setSpecs(cached);
+      try {
+        const t = await api.getTelemetry();
+        setTelemetry(t);
+      } catch (e) {}
+      return;
+    }
+
     try {
       setError(null);
       const [sysSpecs, t] = await Promise.all([
         api.getSystemSpecs(),
         api.getTelemetry(),
       ]);
+      dataCache.setSystemSpecs(sysSpecs);
       setSpecs(sysSpecs);
       setTelemetry(t);
     } catch (e: unknown) {
       console.warn('Failed to load system info:', e);
-      setError(e instanceof Error ? e.message : String(e));
+      if (!dataCache.getSystemSpecs()) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     }
   };
 
@@ -53,7 +67,7 @@ export const SystemInfo: React.FC = () => {
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await loadData();
+    await loadData(true);
     setTimeout(() => setIsRefreshing(false), 500);
   };
 

@@ -32,18 +32,15 @@ const App: React.FC = () => {
       window.deskKleanAPI.isMaximized().then(setIsMaximized);
     }
 
-    // Check if startup elevation prompt should be shown
+    // Check if startup elevation prompt should be shown whenever not elevated
     const checkElevationPrompt = async () => {
       try {
-        const [settings, elevated] = await Promise.all([
-          api.getSettings(),
-          api.isElevated(),
-        ]);
-        if (elevated === false && settings.elevationPromptDismissed === false) {
+        const elevated = await api.isElevated();
+        if (elevated === false) {
           setShowElevationPrompt(true);
         }
       } catch (err) {
-        console.error('Failed to check elevation or settings on startup:', err);
+        console.error('Failed to check elevation on startup:', err);
       }
     };
     checkElevationPrompt();
@@ -54,9 +51,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleNavigate = (module: ModuleId) => {
-    setIsLoading(true);
     setCurrentModule(module);
-    setTimeout(() => setIsLoading(false), 300);
   };
 
   const handleToggleMaximize = async () => {
