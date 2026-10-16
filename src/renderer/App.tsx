@@ -37,7 +37,7 @@ const App: React.FC = () => {
 
   const slowStartupCount = cachedStartup
     ? cachedStartup.filter(
-        (item) => item.enabled && (item.impact === 'High' || (item.bootDegradationSeconds ?? 0) >= 1)
+        (item) => item.enabled && (item.impact === 'high' || (item.estimatedBootImpactMs ?? 0) >= 1000)
       ).length
     : undefined;
 

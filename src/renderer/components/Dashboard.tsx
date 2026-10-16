@@ -95,11 +95,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   };
 
   const slowStartupCount = startupItems
-    ? startupItems.filter((item) => item.enabled && (item.impact === 'High' || (item.bootDegradationSeconds ?? 0) >= 1)).length
+    ? startupItems.filter((item) => item.enabled && (item.impact === 'high' || (item.estimatedBootImpactMs ?? 0) >= 1000)).length
     : null;
 
   const totalBootDegradation = startupItems
-    ? startupItems.filter((item) => item.enabled).reduce((sum, item) => sum + (item.bootDegradationSeconds ?? 0), 0)
+    ? startupItems.filter((item) => item.enabled).reduce((sum, item) => sum + (item.estimatedBootImpactMs ?? 0), 0)
     : null;
 
   const primaryDrive = specs?.drives?.[0] || {
@@ -268,7 +268,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             </div>
             <p className="text-[11px] text-slate-400">
               {totalBootDegradation !== null && totalBootDegradation > 0
-                ? `Slows boot by ~${totalBootDegradation.toFixed(1)} seconds`
+                ? `Slows boot by ~${(totalBootDegradation / 1000).toFixed(1)} seconds`
                 : 'Review startup impact'}
             </p>
           </div>
