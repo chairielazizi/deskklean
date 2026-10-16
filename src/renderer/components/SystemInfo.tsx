@@ -270,7 +270,11 @@ export const SystemInfo: React.FC = () => {
             <div className="flex justify-between">
               <span>VRAM</span>
               <span className="text-slate-300">
-                {specs.gpu.vramMb !== null && specs.gpu.vramMb !== undefined ? `${specs.gpu.vramMb} MB` : 'Unavailable'}
+                {specs.gpu.vramMb !== null && specs.gpu.vramMb !== undefined
+                  ? specs.gpu.vramMb >= 1024
+                    ? `${Math.round(specs.gpu.vramMb / 1024)} GB`
+                    : `${specs.gpu.vramMb} MB`
+                  : 'Unavailable'}
               </span>
             </div>
             <div className="flex justify-between">

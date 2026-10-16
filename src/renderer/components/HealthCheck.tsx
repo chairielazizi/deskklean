@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../apiClient';
 import { HealthReport, ModuleId, HealthMeasurement, HealthIssue } from '../../shared/types';
-import { formatBytes, formatNumber } from '../utils/format';
+import { formatBytes, formatNumber, formatRelativeTime } from '../utils/format';
 import { dataCache } from '../utils/dataCache';
 import {
   HeartPulse,
@@ -121,6 +121,8 @@ export const HealthCheck: React.FC<HealthCheckProps> = ({ onNavigate }) => {
   const [report, setReport] = useState<HealthReport | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isCached, setIsCached] = useState(false);
+  const [isStale, setIsStale] = useState(false);
 
   const runScan = async () => {
     setIsScanning(true);
@@ -129,6 +131,8 @@ export const HealthCheck: React.FC<HealthCheckProps> = ({ onNavigate }) => {
       const data = await api.getHealthReport();
       dataCache.setHealthReport(data);
       setReport(data);
+      setIsCached(false);
+      setIsStale(false);
     } catch (e: unknown) {
       console.error('Health check aggregation failed:', e);
       setError(e instanceof Error ? e.message : 'Failed to retrieve health report');
@@ -141,10 +145,20 @@ export const HealthCheck: React.FC<HealthCheckProps> = ({ onNavigate }) => {
     const cached = dataCache.getHealthReport();
     if (cached) {
       setReport(cached);
+      setIsCached(true);
+      setIsStale(dataCache.isHealthReportStale());
     } else {
       runScan();
     }
   }, []);
+
+  useEffect(() => {
+    if (!isCached) return;
+    const interval = setInterval(() => {
+      setIsStale(dataCache.isHealthReportStale());
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isCached]);
 
   const allIssues: HealthIssue[] = report
     ? report.components.flatMap((c) => c.issues)
@@ -170,14 +184,24 @@ export const HealthCheck: React.FC<HealthCheckProps> = ({ onNavigate }) => {
             Pure aggregator combining real measurements from System Info, Startup Optimizer, and other modules
           </p>
         </div>
-        <button
-          onClick={runScan}
-          disabled={isScanning}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-sm border border-slate-700 transition-all disabled:opacity-50"
-        >
-          {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-          {isScanning ? 'Aggregating...' : 'Re-Scan'}
-        </button>
+        <div className="flex flex-col items-end gap-1.5">
+          <button
+            onClick={runScan}
+            disabled={isScanning}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-sm border border-slate-700 transition-all disabled:opacity-50"
+          >
+            {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {isScanning ? 'Aggregating...' : 'Re-Scan'}
+          </button>
+          {isCached && report && (
+            <p className={`text-xs flex items-center gap-1.5 font-mono ${isStale ? 'text-amber-400' : 'text-slate-400'}`}>
+              <Clock className="w-3.5 h-3.5" />
+              <span>
+                Last scanned {formatRelativeTime(report.generatedAt)}{isStale ? ' (stale)' : ''} &middot; Re-Scan for fresh numbers
+              </span>
+            </p>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -236,6 +260,7 @@ export const HealthCheck: React.FC<HealthCheckProps> = ({ onNavigate }) => {
                 <p className="text-xs text-slate-500 mt-2 flex items-center gap-1.5 font-mono">
                   <Clock className="w-3.5 h-3.5" /> Generated at:{' '}
                   {new Date(report.generatedAt).toLocaleTimeString()}
+                  {isCached ? ' (cached)' : ''}
                 </p>
               )}
             </div>

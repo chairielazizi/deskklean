@@ -53,7 +53,6 @@ import {
   getBaseBoard,
   getBios,
   getOperatingSystem,
-  getLogicalDisks,
   getPhysicalDisks,
   getNetworkAdapters,
   getActivationStatus,
@@ -65,6 +64,7 @@ import {
   getNetworkPerformance,
   getDiskPerformance,
 } from './system/cim';
+import { getDiskMeasurements, getGpuVram64BitMb } from './system/systemInfo';
 import {
   toNumber,
   parseCimDate,
@@ -73,6 +73,7 @@ import {
   busTypeLabel,
 } from './system/parse';
 import { generateHealthReport, HEALTH_SCORE_FORMULA_VERSION } from './system/health';
+import { warnOnce } from './system/log';
 
 export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const userDataDir = app.getPath('userData');
@@ -343,9 +344,9 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     // 4. Drives
     let drives: DriveInfo[] = [];
     try {
-      const [logicalDisks, partitions, disks, physicalDisks] = await Promise.all([
-        getLogicalDisks({ timeoutMs: 5000 }).catch((e) => {
-          console.warn('Failed to query Win32_LogicalDisk:', e);
+      const [diskMeasurements, partitions, disks, physicalDisks] = await Promise.all([
+        getDiskMeasurements({ timeoutMs: 5000 }).catch((e) => {
+          console.warn('Failed to query disk measurements:', e);
           return [];
         }),
         getPartitions({ timeoutMs: 5000 }).catch((e) => {
@@ -362,8 +363,8 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
         }),
       ]);
 
-      drives = logicalDisks.map((ld) => {
-        const letter = (ld.DeviceID || '').replace(':', '').trim().toUpperCase();
+      drives = diskMeasurements.map((dm) => {
+        const letter = (dm.deviceId || '').replace(':', '').trim().toUpperCase();
         const part = partitions.find(
           (p) => p.DriveLetter && p.DriveLetter.trim().toUpperCase() === letter
         );
@@ -411,35 +412,24 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           healthStatus = null;
         }
 
-        const volumeName = (ld.VolumeName || '').trim();
-        const isGoogleDrive = volumeName.toLowerCase().includes('google drive');
-
-        const totalBytes = toNumber(ld.Size) ?? 0;
-        let freeBytes = toNumber(ld.FreeSpace) ?? 0;
-        let usedBytes = Math.max(0, totalBytes - freeBytes);
-
-        if (isGoogleDrive && totalBytes > 0) {
-          // Google Drive Desktop FAT32 virtual filesystem reports occupied cloud data in FreeSpace.
-          usedBytes = toNumber(ld.FreeSpace) ?? 0;
-          freeBytes = Math.max(0, totalBytes - usedBytes);
+        if (dm.isGoogleDrive && dm.totalBytes > 0) {
           driveType = 'Cloud Drive (Google Drive)';
         }
 
-        const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
-        const mount = ld.DeviceID ? (ld.DeviceID.endsWith('\\') ? ld.DeviceID : `${ld.DeviceID}\\`) : 'C:\\';
-        const label = ld.VolumeName || (ld.DeviceID ? `Local Disk (${ld.DeviceID})` : 'Local Disk');
-        const fileSystem = ld.FileSystem || null;
-        const id = (ld.DeviceID || 'c').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'c';
+        const mount = dm.deviceId ? (dm.deviceId.endsWith('\\') ? dm.deviceId : `${dm.deviceId}\\`) : 'C:\\';
+        const label = dm.volumeName || (dm.deviceId ? `Local Disk (${dm.deviceId})` : 'Local Disk');
+        const fileSystem = dm.fileSystem;
+        const id = (dm.deviceId || 'c').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'c';
 
         return {
           id,
           mount,
           label,
           type: driveType,
-          totalBytes,
-          usedBytes,
-          freeBytes,
-          usagePercent,
+          totalBytes: dm.totalBytes,
+          usedBytes: dm.usedBytes,
+          freeBytes: dm.freeBytes,
+          usagePercent: dm.usagePercent,
           fileSystem,
           healthStatus,
         };
@@ -466,8 +456,17 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           const mb = Math.round(rawAdapterRam / (1024 * 1024));
           vramMb = mb > 0 ? mb : null;
         }
+
+        // Win32_VideoController.AdapterRAM is a 32-bit field clamped to 4095 MB (0xFFFFFFFF).
+        // Resolve true 64-bit VRAM from the display adapter registry class key.
+        const modelName = controller.Name || 'Unknown GPU';
+        const vram64 = await getGpuVram64BitMb(modelName).catch(() => null);
+        if (vram64 !== null && vram64 > 0) {
+          vramMb = vram64;
+        }
+
         gpuInfo = {
-          model: controller.Name || 'Unknown GPU',
+          model: modelName,
           vramMb,
           driverVersion: controller.DriverVersion || null,
           usagePercent: null,
@@ -627,6 +626,8 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   getInstantCpuUsage();
 
   let inFlightTelemetry: Promise<{ cpu: number; memory: number; diskRead: number; diskWrite: number }> | null = null;
+  let cachedDiskTelemetry = { diskRead: 0, diskWrite: 0, timestamp: 0 };
+  const DISK_TELEMETRY_CACHE_TTL_MS = 3000;
 
   ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_TELEMETRY, () => {
     if (!isWindows()) {
@@ -658,14 +659,25 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           }
         }
 
-        let diskReadMb = 0;
-        let diskWriteMb = 0;
-        try {
-          const diskPerf = await getDiskPerformance({ timeoutMs: 5000 });
-          diskReadMb = Math.round((diskPerf.diskReadBytesSec / (1024 * 1024)) * 10) / 10;
-          diskWriteMb = Math.round((diskPerf.diskWriteBytesSec / (1024 * 1024)) * 10) / 10;
-        } catch (err) {
-          console.warn('Failed to get disk telemetry:', err);
+        let diskReadMb = cachedDiskTelemetry.diskRead;
+        let diskWriteMb = cachedDiskTelemetry.diskWrite;
+        const now = Date.now();
+
+        if (now - cachedDiskTelemetry.timestamp >= DISK_TELEMETRY_CACHE_TTL_MS) {
+          try {
+            const diskPerf = await getDiskPerformance({ timeoutMs: 10000 });
+            const toMb = (bytesSec: number) => {
+              const mb = bytesSec / (1024 * 1024);
+              if (mb <= 0) return 0;
+              if (mb < 0.1) return Math.round(mb * 100) / 100;
+              return Math.round(mb * 10) / 10;
+            };
+            diskReadMb = toMb(diskPerf.diskReadBytesSec);
+            diskWriteMb = toMb(diskPerf.diskWriteBytesSec);
+            cachedDiskTelemetry = { diskRead: diskReadMb, diskWrite: diskWriteMb, timestamp: now };
+          } catch (err) {
+            warnOnce('telemetry:disk', 'Failed to get disk telemetry', err);
+          }
         }
 
         return {

@@ -174,6 +174,8 @@ export interface Win32_PerfFormattedData_Tcpip_NetworkInterface {
  */
 export interface Win32_PerfFormattedData_PerfDisk_LogicalDisk {
   Name?: string | null;
+  DiskReadBytesPersec?: number | string | null;
+  DiskWriteBytesPersec?: number | string | null;
   DiskReadBytesPerSec?: number | string | null;
   DiskWriteBytesPerSec?: number | string | null;
 }
@@ -646,15 +648,15 @@ export const getDiskPerformance = async (
     'Win32_PerfFormattedData_PerfDisk_LogicalDisk',
     {
       filter: "Name='_Total'",
-      properties: ['DiskReadBytesPerSec', 'DiskWriteBytesPerSec'],
+      properties: ['DiskReadBytesPersec', 'DiskWriteBytesPersec'],
       timeoutMs: opts?.timeoutMs,
     }
   );
   if (rows.length === 0) {
     return { diskReadBytesSec: 0, diskWriteBytesSec: 0 };
   }
-  const read = Number(rows[0].DiskReadBytesPerSec);
-  const write = Number(rows[0].DiskWriteBytesPerSec);
+  const read = Number(rows[0].DiskReadBytesPersec ?? rows[0].DiskReadBytesPerSec);
+  const write = Number(rows[0].DiskWriteBytesPersec ?? rows[0].DiskWriteBytesPerSec);
   return {
     diskReadBytesSec: Number.isFinite(read) ? Math.max(0, read) : 0,
     diskWriteBytesSec: Number.isFinite(write) ? Math.max(0, write) : 0,

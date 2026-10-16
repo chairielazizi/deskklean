@@ -36,3 +36,29 @@ export function formatDuration(seconds: number): string {
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
 }
+
+export function formatRelativeTime(dateOrIso: string | number | Date): string {
+  try {
+    const timestamp =
+      typeof dateOrIso === 'number'
+        ? dateOrIso
+        : dateOrIso instanceof Date
+        ? dateOrIso.getTime()
+        : new Date(dateOrIso).getTime();
+
+    if (Number.isNaN(timestamp)) return 'recently';
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+
+    if (elapsedSeconds < 10) return 'just now';
+    if (elapsedSeconds < 60) return `${elapsedSeconds}s ago`;
+    const minutes = Math.floor(elapsedSeconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  } catch {
+    return 'recently';
+  }
+}
+

@@ -5,22 +5,23 @@ import {
   HealthIssue,
   StartupItem,
 } from '../../shared/types';
-import { getLogicalDisks, Win32_LogicalDisk } from './cim';
-import { toNumber } from './parse';
+import { getDiskMeasurements, measureLogicalDisk, DiskMeasurement } from './systemInfo';
 import { getStartupItems } from './startup';
 import { warnOnce } from './log';
 
 export const HEALTH_SCORE_FORMULA_VERSION = '1.0.0';
 
 export interface HealthProviders {
-  getLogicalDisks?: () => Promise<Win32_LogicalDisk[]>;
+  getDiskMeasurements?: () => Promise<DiskMeasurement[]>;
+  getLogicalDisks?: () => Promise<any[]>;
   getStartupItems?: () => Promise<StartupItem[]>;
 }
 
 export interface AggregateHealthInputs {
   systemInfoResult?: {
     status?: 'ok' | 'partial' | 'failed';
-    disks?: Win32_LogicalDisk[] | null;
+    disks?: any[] | null;
+    diskMeasurements?: DiskMeasurement[] | null;
     error?: Error | string | null;
   };
   startupResult?: {
@@ -190,7 +191,7 @@ export function aggregateHealthReport(inputs: AggregateHealthInputs): HealthRepo
 
   // 1. SystemInfo constituent
   if (inputs.systemInfoResult) {
-    const { status: inputStatus, disks, error } = inputs.systemInfoResult;
+    const { status: inputStatus, disks, diskMeasurements: inputMeasurements, error } = inputs.systemInfoResult;
     if (error || inputStatus === 'failed') {
       components.push({
         module: 'SystemInfo',
@@ -198,85 +199,80 @@ export function aggregateHealthReport(inputs: AggregateHealthInputs): HealthRepo
         measurements: [],
         issues: [],
       });
-    } else if (disks && Array.isArray(disks) && disks.length > 0) {
-      const measurements: HealthMeasurement[] = [];
-      let foundFullDrive = false;
-      let hasMissingFields = false;
-
-      // Primary system drive C: prioritized, followed by any other fixed drives
-      for (const ld of disks) {
-        const letter = (ld.DeviceID || '').toUpperCase().trim();
-        if (!letter) continue;
-
-        const volumeName = (ld.VolumeName || '').trim();
-        const isGoogleDrive = volumeName.toLowerCase().includes('google drive');
-
-        const totalBytes = toNumber(ld.Size);
-        let freeBytes = toNumber(ld.FreeSpace);
-
-        if (totalBytes !== null && totalBytes > 0 && freeBytes !== null && freeBytes >= 0) {
-          foundFullDrive = true;
-
-          // For Google Drive Desktop virtual drive:
-          // Google Drive's FAT32 virtual filesystem reports the occupied cloud data in FreeSpace.
-          // The true available free space is totalBytes - occupiedBytes.
-          if (isGoogleDrive) {
-            const occupiedBytes = freeBytes;
-            freeBytes = Math.max(0, totalBytes - occupiedBytes);
-          }
-
-          const freePercent = Math.round(((freeBytes / totalBytes) * 100) * 10) / 10;
-          const driveTag = isGoogleDrive ? `${letter} · Google Drive` : letter;
-
-          measurements.push({
-            label: `Total disk space (${driveTag})`,
-            value: totalBytes,
-            unit: 'bytes',
-            source: 'SystemInfo',
-          });
-          measurements.push({
-            label: `Free disk space bytes (${driveTag})`,
-            value: freeBytes,
-            unit: 'bytes',
-            source: 'SystemInfo',
-          });
-          measurements.push({
-            label: `Free disk space (${driveTag})`,
-            value: freePercent,
-            unit: 'percent',
-            source: 'SystemInfo',
-          });
-
-          // Use C: for disk pressure, or the first non-cloud drive if C: is absent
-          if (letter.startsWith('C') || (measuredDiskPressure === null && !isGoogleDrive)) {
-            measuredDiskPressure = Math.round(((totalBytes - freeBytes) / totalBytes) * 100 * 10) / 10;
-          }
-        } else {
-          hasMissingFields = true;
-        }
-      }
-
-      if (measurements.length > 0) {
-        hasAnyRealMeasurement = true;
-      }
-
-      const status: 'ok' | 'partial' = inputStatus === 'partial' || hasMissingFields || !foundFullDrive
-        ? 'partial'
-        : 'ok';
-
-      components.push({
-        module: 'SystemInfo',
-        status,
-        measurements,
-        issues: deriveIssues(measurements),
-      });
     } else {
-      components.push({
-        module: 'SystemInfo',
-        status: 'partial',
-        measurements: [],
-        issues: [],
-      });
+      const diskList: DiskMeasurement[] | null = inputMeasurements
+        ?? (disks
+          ? disks.map((d: any) =>
+              d && typeof d === 'object' && 'hasValidMeasurements' in d
+                ? (d as DiskMeasurement)
+                : measureLogicalDisk(d)
+            )
+          : null);
+
+      if (diskList && Array.isArray(diskList) && diskList.length > 0) {
+        const measurements: HealthMeasurement[] = [];
+        let foundFullDrive = false;
+        let hasMissingFields = false;
+
+        // Primary system drive C: prioritized, followed by any other fixed drives
+        for (const dm of diskList) {
+          const letter = (dm.deviceId || '').toUpperCase().trim();
+          if (!letter) continue;
+
+          if (dm.hasValidMeasurements) {
+            foundFullDrive = true;
+            const driveTag = dm.isGoogleDrive ? `${letter} · Google Drive` : letter;
+
+            measurements.push({
+              label: `Total disk space (${driveTag})`,
+              value: dm.totalBytes,
+              unit: 'bytes',
+              source: 'SystemInfo',
+            });
+            measurements.push({
+              label: `Free disk space bytes (${driveTag})`,
+              value: dm.freeBytes,
+              unit: 'bytes',
+              source: 'SystemInfo',
+            });
+            measurements.push({
+              label: `Free disk space (${driveTag})`,
+              value: dm.freePercent,
+              unit: 'percent',
+              source: 'SystemInfo',
+            });
+
+            // Use C: for disk pressure, or the first non-cloud drive if C: is absent
+            if (letter.startsWith('C') || (measuredDiskPressure === null && !dm.isGoogleDrive)) {
+              measuredDiskPressure = Math.round(((dm.totalBytes - dm.freeBytes) / dm.totalBytes) * 100 * 10) / 10;
+            }
+          } else {
+            hasMissingFields = true;
+          }
+        }
+
+        if (measurements.length > 0) {
+          hasAnyRealMeasurement = true;
+        }
+
+        const status: 'ok' | 'partial' = inputStatus === 'partial' || hasMissingFields || !foundFullDrive
+          ? 'partial'
+          : 'ok';
+
+        components.push({
+          module: 'SystemInfo',
+          status,
+          measurements,
+          issues: deriveIssues(measurements),
+        });
+      } else {
+        components.push({
+          module: 'SystemInfo',
+          status: 'partial',
+          measurements: [],
+          issues: [],
+        });
+      }
     }
   } else {
     // SystemInfo not provided
@@ -407,15 +403,18 @@ export function aggregateHealthReport(inputs: AggregateHealthInputs): HealthRepo
  * @returns HealthReport
  */
 export async function generateHealthReport(providers?: HealthProviders): Promise<HealthReport> {
-  const diskQuery = providers?.getLogicalDisks ?? (() => getLogicalDisks({ timeoutMs: 10000 }));
+  const diskQuery = providers?.getDiskMeasurements
+    ?? (providers?.getLogicalDisks
+      ? async () => (await providers.getLogicalDisks!()).map((d) => (d && typeof d === 'object' && 'hasValidMeasurements' in d ? d : measureLogicalDisk(d)))
+      : () => getDiskMeasurements({ timeoutMs: 10000 }));
   const startupQuery = providers?.getStartupItems ?? (() => getStartupItems());
 
   const [disksResult, startupResult] = await Promise.all([
     diskQuery()
-      .then((disks) => ({ status: 'ok' as const, disks, error: null }))
+      .then((diskMeasurements) => ({ status: 'ok' as const, diskMeasurements, error: null }))
       .catch((err) => {
         warnOnce('health:system-info-disks', 'Health Check failed to query logical disks', err);
-        return { status: 'failed' as const, disks: null, error: err };
+        return { status: 'failed' as const, diskMeasurements: null, error: err };
       }),
     startupQuery()
       .then((items) => ({ status: 'ok' as const, items, error: null }))
