@@ -176,3 +176,22 @@ The dev server logged no transform errors while serving those modules.
      - Added an inline `Refresh` button in the header of `StartupOptimizer` (matching `SystemInfo`) to allow users to force a fresh scan on demand.
   3. **Main Process IPC Cache (`src/main/ipc.ts`)**:
      - Added in-memory TTL caching (60s for specs, 30s for startup items) to prevent redundant parallel PowerShell script executions. Cache is automatically invalidated when items are toggled.
+
+### 8. Phase 2 Steps 7 & 8 Verification and Framework Robustness
+- **Features Tested**:
+  1. **Step 7 (Global Startup Delay Control)**:
+     - `getStartupDelay` and `setStartupDelay` writing to `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize`.
+     - Tested `0` ms (instant), `5000` ms, and `null` (reset to Windows default ~10s).
+     - Verified strict distinction between `0` (explicit no delay) and `null` (absent/default).
+     - Confirmed in Windows registry via PowerShell that `StartupDelayInMSec` and `WaitForIdleState` match exactly and are deleted on reset.
+  2. **Step 8 (Startup Backups & Phase 3 Destructive Framework)**:
+     - Verified backup listing with real metadata comments (itemName, hive, location, valueName, timestamp, size, summary).
+     - Verified path traversal protection against `..`, slashes, backslashes, absolute paths, and null-byte injection.
+     - Verified `.reg` file header assertion (`Windows Registry Editor Version 5.00`) before running `reg.exe import`.
+     - Verified single-instance lock and HKLM elevation gating on restores.
+     - Hardened `getModuleBackupDir` in `backup.ts` to align with `app.getPath('userData')` when running inside Electron.
+     - Hardened PowerShell `reg.exe import` path passing using single-quote escaping (`& reg.exe import $p`).
+  3. **Test Results**:
+     - `node scripts/test-phase2-step7-8.mjs`: 49/49 unit tests passed.
+     - `node scripts/test-phase2-live.mjs`: 31/31 live integration tests passed on Windows.
+     - Main process (`npm run build:main`) and Renderer (`npx vite build`) build cleanly with 0 errors.

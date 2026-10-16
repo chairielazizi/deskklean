@@ -215,6 +215,78 @@ export interface StartupItem {
   target: StartupItemTarget;
 }
 
+export interface StartupDelayState {
+  delayMs: number | null;
+  waitForIdle: boolean | null;
+  supported: boolean;
+}
+
+export interface StartupBackup {
+  id: string;
+  timestamp: string;
+  filePath: string;
+  itemName: string;
+  hive: 'HKCU' | 'HKLM';
+  location: string;
+  valueName: string;
+  changeSummary: string;
+  sizeBytes: number;
+}
+
+// Phase 3 Destructive Framework types
+export type ActionKind =
+  | 'delete-file'
+  | 'delete-tree'
+  | 'overwrite-file'
+  | 'registry-value'
+  | 'registry-key'
+  | 'scheduled-task'
+  | 'uninstall';
+
+export type Reversibility = 'reversible' | 'irreversible';
+
+export interface PlannedAction {
+  id: string;
+  kind: ActionKind;
+  target: string;
+  description: string;
+  reclaimableBytes: number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BlockedAction {
+  target: string;
+  reason: string;
+}
+
+export interface OperationPlan {
+  id: string;
+  module: string;
+  actions: PlannedAction[];
+  blocked: BlockedAction[];
+  totalReclaimableBytes: number | null;
+  reversibility: Reversibility;
+  irreversibilityReason?: string;
+  requiresElevation: boolean;
+  createdAt: string;
+}
+
+export interface ExecuteFailure {
+  target: string;
+  error: string;
+}
+
+export interface ExecuteResult {
+  success: boolean;
+  completed: number;
+  failed: number;
+  skipped: number;
+  reclaimableBytes: number | null;
+  failures: ExecuteFailure[];
+  backupPath?: string;
+  message?: string;
+}
+
 // App Remover
 export interface InstalledApp {
   id: string;
@@ -405,8 +477,13 @@ export interface DeskKleanAPI {
 
   // Startup
   getStartupItems: () => Promise<StartupItem[]>;
-  toggleStartupItem: (id: string, enabled: boolean) => Promise<{ success: boolean; message?: string }>;
-  setStartupItemDelay: (id: string, delaySec: number) => Promise<{ success: boolean }>;
+  toggleStartupItem: (id: string, enabled: boolean) => Promise<{ success: boolean; message?: string; backupPath?: string }>;
+  getStartupDelay: () => Promise<StartupDelayState>;
+  setStartupDelay: (ms: number | null, waitForIdle: boolean) => Promise<{ success: boolean; message?: string }>;
+  getStartupBackups: () => Promise<StartupBackup[]>;
+  restoreStartupBackup: (id: string) => Promise<{ success: boolean; message?: string }>;
+  planStartupRestore: (id: string) => Promise<OperationPlan>;
+  executeOperationPlan: (planId: string) => Promise<ExecuteResult>;
 
   // Apps
   getInstalledApps: () => Promise<InstalledApp[]>;

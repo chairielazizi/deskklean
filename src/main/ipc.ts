@@ -28,7 +28,23 @@ import {
   ActivityItem,
 } from '../shared/types';
 import { isWindows } from './system/powershell';
-import { getStartupItems, toggleStartupItem } from './system/startup';
+import {
+  getStartupItems,
+  toggleStartupItem,
+  getStartupDelay,
+  setStartupDelay,
+  getStartupBackups,
+  restoreStartupBackup,
+  planStartupRestore,
+} from './system/startup';
+import {
+  migrateLegacyBackups,
+  listModuleBackups,
+  executeOperationPlan,
+  getModuleBackupDir,
+  StartupDelayState,
+  StartupBackup,
+} from './system/framework';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -60,12 +76,7 @@ import {
 export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const userDataDir = app.getPath('userData');
   const settingsFile = path.join(userDataDir, 'settings.json');
-  const backupsDir = path.join(userDataDir, 'registry_backups');
   const logsFile = path.join(userDataDir, 'activity_logs.json');
-
-  if (!fs.existsSync(backupsDir)) {
-    fs.mkdirSync(backupsDir, { recursive: true });
-  }
 
   // Activity logs in-memory / persisted
   let activityLogs: ActivityItem[] = [
@@ -119,6 +130,13 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     } catch (e) {
       console.error('Failed to write activity logs:', e);
     }
+  }
+
+  // Migrate legacy backups to the unified backup store (<userData>/backups/startup/)
+  try {
+    migrateLegacyBackups(userDataDir, (item) => logActivity(item as any));
+  } catch (err) {
+    console.warn('Backup migration check error:', err);
   }
 
   // --- Window Handlers ---
@@ -825,9 +843,13 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_GET_BACKUPS, async (): Promise<RegistryBackup[]> => {
     try {
-      const files = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.reg'));
+      const regBackupsDir = getModuleBackupDir('registry', userDataDir);
+      if (!fs.existsSync(regBackupsDir)) {
+        return [];
+      }
+      const files = fs.readdirSync(regBackupsDir).filter((f) => f.endsWith('.reg'));
       return files.map((file) => {
-        const fullPath = path.join(backupsDir, file);
+        const fullPath = path.join(regBackupsDir, file);
         const stats = fs.statSync(fullPath);
         let issueCount = 0;
         try {
@@ -904,139 +926,6 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- Startup Optimizer ---
-  let startupItems: (StartupItem & { bootDelaySec?: number })[] = [
-    {
-      id: 'startup-1',
-      name: 'Spotify Web Helper & Launcher',
-      publisher: 'Spotify AB',
-      command: '"C:\\Users\\User\\AppData\\Roaming\\Spotify\\Spotify.exe" --autostart',
-      location: 'HKCU_RUN',
-      impact: 'high',
-      enabled: false,
-      bootDelaySec: 0,
-      estimatedBootImpactMs: 1850,
-      target: {
-        kind: 'registry',
-        hive: 'HKCU',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'Spotify',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'Spotify',
-      },
-    },
-    {
-      id: 'startup-2',
-      name: 'Discord',
-      publisher: 'Discord Inc.',
-      command: '"C:\\Users\\User\\AppData\\Local\\Discord\\Update.exe" --processStart Discord.exe',
-      location: 'HKCU_RUN',
-      impact: 'high',
-      enabled: true,
-      bootDelaySec: 15,
-      estimatedBootImpactMs: 2200,
-      target: {
-        kind: 'registry',
-        hive: 'HKCU',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'Discord',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'Discord',
-      },
-    },
-    {
-      id: 'startup-3',
-      name: 'Microsoft OneDrive Sync',
-      publisher: 'Microsoft Corporation',
-      command: '"C:\\Program Files\\Microsoft OneDrive\\OneDrive.exe" /background',
-      location: 'HKCU_RUN',
-      impact: 'medium',
-      enabled: true,
-      bootDelaySec: 0,
-      estimatedBootImpactMs: 950,
-      target: {
-        kind: 'registry',
-        hive: 'HKCU',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'OneDrive',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'OneDrive',
-      },
-    },
-    {
-      id: 'startup-4',
-      name: 'Steam Client Bootstrapper',
-      publisher: 'Valve Corp.',
-      command: '"C:\\Program Files (x86)\\Steam\\steam.exe" -silent',
-      location: 'HKCU_RUN',
-      impact: 'high',
-      enabled: false,
-      bootDelaySec: 0,
-      estimatedBootImpactMs: 2400,
-      target: {
-        kind: 'registry',
-        hive: 'HKCU',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'Steam',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'Steam',
-      },
-    },
-    {
-      id: 'startup-5',
-      name: 'Realtek HD Audio Universal Service',
-      publisher: 'Realtek Semiconductor Corp.',
-      command: '"C:\\Program Files\\Realtek\\Audio\\HDA\\RtkAudioService64.exe"',
-      location: 'HKLM_RUN',
-      impact: 'low',
-      enabled: true,
-      bootDelaySec: 0,
-      estimatedBootImpactMs: 180,
-      target: {
-        kind: 'registry',
-        hive: 'HKLM',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'RtkAudioService',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'RtkAudioService',
-      },
-    },
-    {
-      id: 'startup-6',
-      name: 'Adobe Creative Cloud Sync',
-      publisher: 'Adobe Inc.',
-      command: '"C:\\Program Files\\Adobe\\Creative Cloud\\ACC\\Creative Cloud.exe"',
-      location: 'SCHEDULED_TASK',
-      impact: 'medium',
-      enabled: false,
-      bootDelaySec: 30,
-      estimatedBootImpactMs: 1200,
-      target: {
-        kind: 'task',
-        taskPath: '\\Adobe\\',
-        taskName: 'Adobe Creative Cloud Sync',
-      },
-    },
-    {
-      id: 'startup-7',
-      name: 'Windows Security Notification',
-      publisher: 'Microsoft Windows',
-      command: '"C:\\Program Files\\Windows Defender\\MSASCuiL.exe"',
-      location: 'HKLM_RUN',
-      impact: 'none',
-      enabled: true,
-      bootDelaySec: 0,
-      estimatedBootImpactMs: 40,
-      target: {
-        kind: 'registry',
-        hive: 'HKLM',
-        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run',
-        valueName: 'MSASCuiL',
-        approvedKeyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run',
-        approvedValueName: 'MSASCuiL',
-      },
-    },
-  ];
-
   let cachedStartupItems: { data: StartupItem[]; timestamp: number } | null = null;
   const STARTUP_ITEMS_CACHE_TTL_MS = 30 * 1000; // 30s cache in main process
 
@@ -1068,9 +957,77 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.STARTUP_SET_DELAY, async (_, id: string, delaySec: number) => {
-    startupItems = startupItems.map((item) => (item.id === id ? { ...item, bootDelaySec: delaySec } : item));
-    return { success: true };
+  // STEP 7 — Global Startup Delay Control (reads & writes HKCU\...\Serialize)
+  ipcMain.handle(IPC_CHANNELS.STARTUP_GET_DELAY, async (): Promise<StartupDelayState> => {
+    return getStartupDelay();
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.STARTUP_SET_DELAY,
+    async (
+      _,
+      ms: number | null,
+      waitForIdle: boolean
+    ): Promise<{ success: boolean; message?: string }> => {
+      const prior = await getStartupDelay();
+      const result = await setStartupDelay(ms, waitForIdle);
+      if (result.success) {
+        const delayStr = ms === null ? 'Windows default (~10s)' : `${ms}ms`;
+        const priorStr = prior.delayMs === null ? 'default' : `${prior.delayMs}ms`;
+        logActivity({
+          module: 'startup-optimizer',
+          title: 'Global Startup Delay Configured',
+          detail: `Global startup delay set to ${delayStr} (idle wait: ${
+            waitForIdle ? 'enabled' : 'disabled'
+          }). Prior state: ${priorStr}.`,
+          type: 'success',
+        });
+      }
+      return result;
+    }
+  );
+
+  // STEP 8 — Startup Backups & Restore (plugs into Phase 3 Framework)
+  ipcMain.handle(IPC_CHANNELS.STARTUP_GET_BACKUPS, async (): Promise<StartupBackup[]> => {
+    return getStartupBackups();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.STARTUP_PLAN_RESTORE, async (_, backupId: string) => {
+    return planStartupRestore(backupId);
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.STARTUP_RESTORE_BACKUP,
+    async (_, backupId: string): Promise<{ success: boolean; message?: string }> => {
+      cachedStartupItems = null; // Invalidate cache after restore
+      return restoreStartupBackup(backupId, logActivity);
+    }
+  );
+
+  // Phase 3 Destructive Framework channels
+  ipcMain.handle(IPC_CHANNELS.FRAMEWORK_PLAN, async (_, module: string, options: any) => {
+    if (module === 'startup-optimizer' || module === 'startup') {
+      return planStartupRestore(options.backupId || options.id);
+    }
+    throw new Error(`Module ${module} is not implemented in framework yet`);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FRAMEWORK_EXECUTE, async (_, planId: string) => {
+    cachedStartupItems = null;
+    return executeOperationPlan(planId, (item) => logActivity(item as any));
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FRAMEWORK_BACKUPS_LIST, async (_, module: string) => {
+    const mod = module === 'startup-optimizer' ? 'startup' : module;
+    return listModuleBackups(mod, userDataDir);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.FRAMEWORK_BACKUP_RESTORE, async (_, module: string, backupId: string) => {
+    if (module === 'startup-optimizer' || module === 'startup') {
+      cachedStartupItems = null;
+      return restoreStartupBackup(backupId, (item) => logActivity(item as any));
+    }
+    throw new Error(`Module ${module} is not implemented in framework yet`);
   });
 
   // --- App Remover ---

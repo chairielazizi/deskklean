@@ -7,6 +7,10 @@ import {
   RegistryIssue,
   RegistryBackup,
   StartupItem,
+  StartupDelayState,
+  StartupBackup,
+  OperationPlan,
+  ExecuteResult,
   InstalledApp,
   AppUninstallResult,
   BrowserExtension,
@@ -418,7 +422,56 @@ const mockAPI: DeskKleanAPI = {
   toggleStartupItem: async (id: string, enabled: boolean): Promise<{ success: boolean; message?: string }> => ({
     success: true,
   }),
-  setStartupItemDelay: async (id: string, delaySec: number) => ({ success: true }),
+  getStartupDelay: async (): Promise<StartupDelayState> => ({
+    delayMs: null,
+    waitForIdle: true,
+    supported: true,
+  }),
+  setStartupDelay: async (ms: number | null, waitForIdle: boolean) => ({ success: true }),
+  getStartupBackups: async (): Promise<StartupBackup[]> => [
+    {
+      id: '2026-10-15T12-00-00-000Z-HKCU-Spotify',
+      timestamp: '2026-10-15T12:00:00.000Z',
+      filePath: 'C:\\Users\\User\\AppData\\Roaming\\DeskKlean\\backups\\startup\\2026-10-15T12-00-00-000Z-HKCU-Spotify.reg',
+      itemName: 'Spotify',
+      hive: 'HKCU',
+      location: 'HKCU_RUN',
+      valueName: 'Spotify',
+      changeSummary: 'Saved Run command (toggled to disabled)',
+      sizeBytes: 1024,
+    },
+  ],
+  restoreStartupBackup: async (id: string) => ({
+    success: true,
+    message: `Restored backup ${id} successfully.`,
+  }),
+  planStartupRestore: async (id: string): Promise<OperationPlan> => ({
+    id: `plan-mock-${Date.now()}`,
+    module: 'startup-optimizer',
+    actions: [
+      {
+        id: `action-${id}`,
+        kind: 'registry-value',
+        target: '[HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run] Spotify',
+        description: 'Restore startup configuration for "Spotify"',
+        reclaimableBytes: null,
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: null,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  }),
+  executeOperationPlan: async (planId: string): Promise<ExecuteResult> => ({
+    success: true,
+    completed: 1,
+    failed: 0,
+    skipped: 0,
+    reclaimableBytes: null,
+    failures: [],
+    message: 'Operation executed successfully.',
+  }),
 
   getInstalledApps: async (): Promise<InstalledApp[]> => [
     {

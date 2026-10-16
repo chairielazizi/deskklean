@@ -36,7 +36,17 @@ export const IPC_CHANNELS = {
   // Startup
   STARTUP_GET_ITEMS: 'startup:getItems',
   STARTUP_TOGGLE_ITEM: 'startup:toggleItem',
+  STARTUP_GET_DELAY: 'startup:getDelay',
   STARTUP_SET_DELAY: 'startup:setDelay',
+  STARTUP_GET_BACKUPS: 'startup:getBackups',
+  STARTUP_RESTORE_BACKUP: 'startup:restoreBackup',
+  STARTUP_PLAN_RESTORE: 'startup:planRestore',
+
+  // Framework
+  FRAMEWORK_PLAN: 'framework:plan',
+  FRAMEWORK_EXECUTE: 'framework:execute',
+  FRAMEWORK_BACKUPS_LIST: 'framework:backupsList',
+  FRAMEWORK_BACKUP_RESTORE: 'framework:backupRestore',
 
   // Apps
   APPS_GET_INSTALLED: 'apps:getInstalled',

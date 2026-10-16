@@ -9,6 +9,10 @@ import {
   RegistryIssue,
   RegistryBackup,
   StartupItem,
+  StartupDelayState,
+  StartupBackup,
+  OperationPlan,
+  ExecuteResult,
   InstalledApp,
   AppUninstallResult,
   BrowserExtension,
@@ -57,8 +61,17 @@ const api: DeskKleanAPI = {
   getStartupItems: (): Promise<StartupItem[]> => ipcRenderer.invoke(IPC_CHANNELS.STARTUP_GET_ITEMS),
   toggleStartupItem: (id: string, enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.STARTUP_TOGGLE_ITEM, id, enabled),
-  setStartupItemDelay: (id: string, delaySec: number) =>
-    ipcRenderer.invoke(IPC_CHANNELS.STARTUP_SET_DELAY, id, delaySec),
+  getStartupDelay: (): Promise<StartupDelayState> => ipcRenderer.invoke(IPC_CHANNELS.STARTUP_GET_DELAY),
+  setStartupDelay: (ms: number | null, waitForIdle: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.STARTUP_SET_DELAY, ms, waitForIdle),
+  getStartupBackups: (): Promise<StartupBackup[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.STARTUP_GET_BACKUPS),
+  restoreStartupBackup: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.STARTUP_RESTORE_BACKUP, id),
+  planStartupRestore: (id: string): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.STARTUP_PLAN_RESTORE, id),
+  executeOperationPlan: (planId: string): Promise<ExecuteResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_EXECUTE, planId),
 
   // Apps
   getInstalledApps: (): Promise<InstalledApp[]> => ipcRenderer.invoke(IPC_CHANNELS.APPS_GET_INSTALLED),

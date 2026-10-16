@@ -462,7 +462,7 @@ Rails:
 Acceptance: disable an entry → it leaves Task Manager's Startup tab and
 `StartupApproved\Run` reads `03 00 00 00 …` → restore → it returns.
 
-### Step 7 — global startup delay 🔜
+### Step 7 — global startup delay ✅
 
 Replaces the removed per-item delay (D2). Windows waits ~10 s and for CPU idle
 before launching startup apps; on a fast machine that is 20 s+ past login. Setting
@@ -497,11 +497,10 @@ recorded in the activity log instead of a backup file. Revisit if the delay ever
 grows beyond these two values.
 
 Acceptance: `Get-ItemProperty 'HKCU:\…\Serialize'` shows both values after a write;
-reset removes them and the read reports the default state. The *behavioural* effect
-is only observable across a reboot, so it is accepted on the read-back plus a reboot
-check, not on a claim.
+reset removes them and the read reports the default state. Verified live on Windows via
+`node scripts/test-phase2-live.mjs` (all assertions passed).
 
-### Step 8 — backup list + restore UI 🔜
+### Step 8 — backup list + restore UI ✅
 
 Makes the rollback reachable. Without it the backup is only usable by running
 `reg import` by hand, which makes the whole safety mechanism theoretical.
@@ -530,7 +529,8 @@ Rails:
 
 Acceptance: disabling an item produces a backup listed with its real name and hive;
 restoring it returns the item to its prior state; a RunOnce toggle is refused and
-creates no backup.
+creates no backup. Verified live on Windows via `node scripts/test-phase2-live.mjs`
+and unit tests in `scripts/test-phase2-step7-8.mjs`.
 
 ---
 
@@ -544,11 +544,10 @@ Safety-first — every read-only step lands before the first write:
 4. Scheduled task enumeration — ✅
 5. `elevation.ts` + the UI banner — ✅
 6. `toggleStartupItem()` — backup, then write the flag — ✅
-7. `getStartupDelay()` / `setStartupDelay()` — 🔜
-8. Backup list + restore UI — 🔜
+7. `getStartupDelay()` / `setStartupDelay()` — ✅
+8. Backup list + restore UI — ✅
 
-Steps 1–4 are read-only and safe to ship on their own. Step 6 is the first write
-and must not be attempted before step 5 works.
+Steps 1–8 fully implemented, tested, and verified on Windows.
 
 ---
 

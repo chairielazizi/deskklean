@@ -5,6 +5,7 @@ import { runPowerShell, parseJsonSafe, isWindows } from './powershell';
 import {
   readKeyValues,
   readValue,
+  ReadValueResult,
   decodeStartupApproved,
   encodeStartupApproved,
   buildRegSnippet,
@@ -13,6 +14,20 @@ import {
 import { warnOnce } from './log';
 import { isElevated } from './elevation';
 import { StartupItem, StartupImpact, StartupItemTarget } from '../../shared/types';
+import {
+  writeRegBackupFile,
+  getModuleBackupDir,
+  listModuleBackups,
+  validateBackupForRestore,
+} from './framework/backup';
+import { createOperationPlan } from './framework/plan';
+import { executeOperationPlan } from './framework/execute';
+import {
+  StartupBackup,
+  StartupDelayState,
+  OperationPlan,
+  ExecuteResult,
+} from './framework/types';
 
 interface RawStartupFolderItem {
   Scope: 'common' | 'user';
@@ -690,12 +705,7 @@ export async function toggleStartupItem(
   // 2. the StartupApproved flag value, if it exists
   let backupFilePath = '';
   try {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    const backupDir = path.join(appData, 'DeskKlean', 'backups', 'startup');
-    if (!fs.existsSync(backupDir)) {
-      fs.mkdirSync(backupDir, { recursive: true });
-    }
-
+    const backupDir = getModuleBackupDir('startup');
     const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const rawValName = target.valueName || target.approvedValueName || item.name;
     const sanitizedValName = rawValName.replace(/[^a-zA-Z0-9._-]+/g, '_');
@@ -785,19 +795,14 @@ export async function toggleStartupItem(
       snippets.push(deleteSnippet);
     }
 
-    const backupContent = mergeRegSnippets(snippets);
-
-    // Write file as UTF-16LE WITH a BOM (\uFEFF)
-    fs.writeFileSync(backupFilePath, '\uFEFF' + backupContent, { encoding: 'utf16le' });
-
-    // Verify resulting bytes are FF FE at the start
-    const headerCheck = Buffer.alloc(2);
-    const fd = fs.openSync(backupFilePath, 'r');
-    fs.readSync(fd, headerCheck, 0, 2, 0);
-    fs.closeSync(fd);
-    if (headerCheck[0] !== 0xff || headerCheck[1] !== 0xfe) {
-      throw new Error('Backup file BOM check failed: first bytes are not FF FE');
-    }
+    writeRegBackupFile(backupFilePath, snippets, {
+      module: 'startup-optimizer',
+      itemName: item.name,
+      hive,
+      location: item.location,
+      valueName: rawValName,
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
     warnOnce('startup:backup-failed', 'Failed to create backup before registry write', err);
     return { success: false, message: 'Backup failed; no changes were made.' };
@@ -831,4 +836,247 @@ export async function toggleStartupItem(
 
   // 6g. Return confirmed success (caller logs with logActivity)
   return { success: true, backupPath: backupFilePath };
+}
+
+// ---------------------------------------------------------------------------
+// STEP 7 — Global startup delay control
+// Location: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize
+// ---------------------------------------------------------------------------
+
+export const SERIALIZE_KEY_PATH = 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize';
+export const STARTUP_DELAY_VALUE = 'StartupDelayInMSec';
+export const WAIT_FOR_IDLE_VALUE = 'WaitForIdleState';
+
+/**
+ * Reads the global Windows startup delay and CPU idle wait settings.
+ *
+ * Location: HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Serialize
+ * - StartupDelayInMSec (REG_DWORD): ms to wait before launching startup apps. Absent = Windows default (~10s).
+ * - WaitForIdleState (REG_DWORD): 0 = do not also wait for CPU idle. Absent = Windows default (waits for CPU idle).
+ *
+ * Rails:
+ * - null and 0 are different states and must not be conflated. Absent means default (null); 0 means explicitly no delay.
+ * - HKCU only — no elevation needed.
+ * - Non-Windows returns { delayMs: null, waitForIdle: null, supported: false }.
+ */
+export async function getStartupDelay(): Promise<StartupDelayState> {
+  if (!isWindows()) {
+    return { delayMs: null, waitForIdle: null, supported: false };
+  }
+
+  const [delayVal, idleVal] = await Promise.all([
+    readValue('HKCU', SERIALIZE_KEY_PATH, STARTUP_DELAY_VALUE).catch(
+      (): ReadValueResult => ({ exists: false })
+    ),
+    readValue('HKCU', SERIALIZE_KEY_PATH, WAIT_FOR_IDLE_VALUE).catch(
+      (): ReadValueResult => ({ exists: false })
+    ),
+  ]);
+
+  let delayMs: number | null = null;
+  if (delayVal.exists && delayVal.data !== undefined && delayVal.data !== null) {
+    const parsed = Number(delayVal.data);
+    delayMs = Number.isNaN(parsed) ? null : parsed;
+  }
+
+  let waitForIdle: boolean | null = null;
+  if (idleVal.exists && idleVal.data !== undefined && idleVal.data !== null) {
+    const parsed = Number(idleVal.data);
+    waitForIdle = !Number.isNaN(parsed) ? parsed !== 0 : null;
+  }
+
+  return {
+    delayMs,
+    waitForIdle,
+    supported: true,
+  };
+}
+
+/**
+ * Sets the global Windows startup delay and CPU idle wait settings.
+ *
+ * Rails:
+ * - HKCU only — no elevation.
+ * - Create the Serialize key if missing.
+ * - ms === null: deletes StartupDelayInMSec and WaitForIdleState, restoring Windows default (~10s).
+ * - ms !== null: writes StartupDelayInMSec as REG_DWORD.
+ * - waitForIdle: written as 1 (wait) or 0 (don't wait) when setting delay, or deleted on reset.
+ * - Verified by read-back: confirmed matching intended state before reporting success.
+ * - Undo is deleting the values.
+ */
+export async function setStartupDelay(
+  ms: number | null,
+  waitForIdle: boolean
+): Promise<{ success: boolean; message?: string }> {
+  if (!isWindows()) {
+    return { success: false, message: 'Global startup delay is only supported on Windows.' };
+  }
+
+  const psKeyPath = `HKCU:\\${SERIALIZE_KEY_PATH}`;
+  const escapedKeyPath = escapePsSingleQuote(psKeyPath);
+
+  if (ms === null) {
+    // Reset to Windows default: delete the values
+    const resetScript = `
+      $p = '${escapedKeyPath}';
+      if (Test-Path -LiteralPath $p) {
+        Remove-ItemProperty -LiteralPath $p -Name '${STARTUP_DELAY_VALUE}' -ErrorAction SilentlyContinue | Out-Null;
+        Remove-ItemProperty -LiteralPath $p -Name '${WAIT_FOR_IDLE_VALUE}' -ErrorAction SilentlyContinue | Out-Null;
+      }
+    `.trim();
+
+    try {
+      await runPowerShell(resetScript);
+    } catch (err) {
+      warnOnce('startup:delay-reset-failed', 'Failed to reset global startup delay in registry', err);
+      return { success: false, message: 'Failed to reset startup delay in registry.' };
+    }
+
+    // Verify read-back: values must no longer exist
+    const [delayCheck, idleCheck] = await Promise.all([
+      readValue('HKCU', SERIALIZE_KEY_PATH, STARTUP_DELAY_VALUE),
+      readValue('HKCU', SERIALIZE_KEY_PATH, WAIT_FOR_IDLE_VALUE),
+    ]);
+
+    if (delayCheck.exists || idleCheck.exists) {
+      return { success: false, message: 'Write could not be verified: values were not removed.' };
+    }
+
+    return { success: true };
+  }
+
+  // Set explicitly configured delay
+  const sanitizedMs = Math.max(0, Math.floor(ms));
+  const idleDword = waitForIdle ? 1 : 0;
+
+  const setScript = `
+    $p = '${escapedKeyPath}';
+    if (-not (Test-Path -LiteralPath $p)) {
+      New-Item -Path $p -Force | Out-Null;
+    }
+    New-ItemProperty -LiteralPath $p -Name '${STARTUP_DELAY_VALUE}' -Value ([int]${sanitizedMs}) -PropertyType DWord -Force | Out-Null;
+    New-ItemProperty -LiteralPath $p -Name '${WAIT_FOR_IDLE_VALUE}' -Value ([int]${idleDword}) -PropertyType DWord -Force | Out-Null;
+  `.trim();
+
+  try {
+    await runPowerShell(setScript);
+  } catch (err) {
+    warnOnce('startup:delay-write-failed', 'Failed to write global startup delay to registry', err);
+    return { success: false, message: 'Failed to write startup delay to registry.' };
+  }
+
+  // Verify read-back: values must match what was written
+  const [delayCheck, idleCheck] = await Promise.all([
+    readValue('HKCU', SERIALIZE_KEY_PATH, STARTUP_DELAY_VALUE),
+    readValue('HKCU', SERIALIZE_KEY_PATH, WAIT_FOR_IDLE_VALUE),
+  ]);
+
+  if (
+    !delayCheck.exists ||
+    Number(delayCheck.data) !== sanitizedMs ||
+    !idleCheck.exists ||
+    Number(idleCheck.data) !== idleDword
+  ) {
+    return { success: false, message: 'Write could not be verified: read-back did not match intended values.' };
+  }
+
+  return { success: true };
+}
+
+// ---------------------------------------------------------------------------
+// STEP 8 — Backup listing and restore UI (Phase 3 Framework)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lists all backups for the startup optimizer, parsing the metadata headers from the real .reg files.
+ */
+export async function getStartupBackups(): Promise<StartupBackup[]> {
+  return listModuleBackups('startup');
+}
+
+/**
+ * Plans a restore operation for a startup backup (Phase 3 Framework — Step 1: Plan).
+ * Dry-run: checks path traversal, asserts .reg header, reads target metadata, changes nothing.
+ */
+export async function planStartupRestore(backupId: string): Promise<OperationPlan> {
+  const validation = validateBackupForRestore('startup', backupId);
+  if (!validation.valid || !validation.filePath) {
+    throw new Error(validation.reason || 'Invalid backup file');
+  }
+
+  const meta = validation.metadata || {};
+  const hive = meta.hive || 'HKCU';
+  const itemName = meta.itemName || backupId;
+  const location = meta.location || `${hive}_RUN`;
+  const valueName = meta.valueName || itemName;
+
+  // Determine keyPath and approvedKeyPath from metadata or content
+  let keyPath = '';
+  let approvedKeyPath = '';
+  if (validation.content) {
+    const keyMatches = Array.from(
+      validation.content.matchAll(/\[(?:HKEY_CURRENT_USER|HKEY_LOCAL_MACHINE)\\([^\]]+)\]/gi)
+    );
+    for (const match of keyMatches) {
+      const fullPath = match[1];
+      if (/StartupApproved/i.test(fullPath)) {
+        approvedKeyPath = fullPath;
+      } else if (/CurrentVersion\\(?:Run|RunOnce)/i.test(fullPath)) {
+        keyPath = fullPath;
+      }
+    }
+  }
+
+  const targetDescription = `[${hive}\\${keyPath || location}] ${valueName}`;
+  const requiresElevation = hive === 'HKLM';
+
+  return createOperationPlan({
+    module: 'startup-optimizer',
+    actions: [
+      {
+        id: `restore-${backupId}`,
+        kind: 'registry-value',
+        target: targetDescription,
+        description: `Restore startup configuration for "${itemName}" from backup ${path.basename(validation.filePath)}`,
+        reclaimableBytes: null,
+        metadata: {
+          backupFilePath: validation.filePath,
+          backupId,
+          hive,
+          itemName,
+          location,
+          keyPath,
+          valueName,
+          approvedKeyPath,
+          approvedValueName: meta.valueName || itemName,
+          isRestore: true,
+        },
+      },
+    ],
+    reversibility: 'reversible',
+    requiresElevation,
+  });
+}
+
+/**
+ * Restores a startup backup through the Phase 3 Destructive Framework.
+ * Plan -> Confirm (if called directly) -> Execute -> Verify -> Record.
+ */
+export async function restoreStartupBackup(
+  backupId: string,
+  logActivity?: (item: any) => void
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const plan = await planStartupRestore(backupId);
+    const result = await executeOperationPlan(plan.id, logActivity);
+    return {
+      success: result.success,
+      message: result.message || (result.success ? 'Backup restored successfully.' : 'Restore failed.'),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
