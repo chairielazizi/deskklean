@@ -16,6 +16,7 @@ import {
   SmartCleanReport,
   SmartCleanScanResult,
   SmartCleanResult,
+  ExecuteResult,
   RegistryIssue,
   RegistryBackup,
   StartupItem,
@@ -47,6 +48,7 @@ import {
   StartupBackup,
 } from './system/framework';
 import { scanSmartClean } from './system/smartclean/scan';
+import { createSmartCleanPlan } from './system/smartclean/execute';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -709,8 +711,11 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- Smart Clean ---
+  let lastSmartCleanReport: SmartCleanReport | null = null;
+
   ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_SCAN, async (_, enabledCategoryIds?: string[]): Promise<SmartCleanReport> => {
     const report = await scanSmartClean(enabledCategoryIds);
+    lastSmartCleanReport = report;
 
     logActivity({
       module: 'smart-clean',
@@ -722,16 +727,33 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     return report;
   });
 
-  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_EXECUTE, async (): Promise<SmartCleanResult> => {
-    // Phase 5 is read-only scan: deletion path is deferred to Phase 6
-    return {
-      success: false,
-      cleanedSizeBytes: 0,
-      cleanedItemCount: 0,
-      errors: [{ path: '', error: 'Execution not supported in Phase 5 (read-only scan)' }],
-      cleanedAt: new Date().toISOString(),
-    };
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.SMART_CLEAN_EXECUTE,
+    async (
+      _,
+      options?: string[] | { report?: SmartCleanReport; selectedCategoryIds?: string[] }
+    ): Promise<ExecuteResult> => {
+      let selectedCategoryIds: string[] | undefined;
+      let report: SmartCleanReport | null = null;
+
+      if (Array.isArray(options)) {
+        selectedCategoryIds = options;
+      } else if (options && typeof options === 'object') {
+        selectedCategoryIds = options.selectedCategoryIds;
+        report = options.report || null;
+      }
+
+      if (!report) {
+        report = lastSmartCleanReport || (await scanSmartClean(selectedCategoryIds));
+      }
+
+      // 1. FRAMEWORK_PLAN: Convert scan report to framework OperationPlan
+      const plan = createSmartCleanPlan(report, selectedCategoryIds);
+
+      // 2. FRAMEWORK_EXECUTE: Execute through framework pipeline
+      return executeOperationPlan(plan.id, (item) => logActivity(item as any));
+    }
+  );
 
   // --- Registry Fixer ---
   const sampleRegistryIssues: RegistryIssue[] = [
@@ -991,6 +1013,13 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle(IPC_CHANNELS.FRAMEWORK_PLAN, async (_, module: string, options: any) => {
     if (module === 'startup-optimizer' || module === 'startup') {
       return planStartupRestore(options.backupId || options.id);
+    }
+    if (module === 'smart-clean' || module === 'smartclean') {
+      const report =
+        options?.report ||
+        lastSmartCleanReport ||
+        (await scanSmartClean(options?.selectedCategoryIds));
+      return createSmartCleanPlan(report, options?.selectedCategoryIds, options);
     }
     throw new Error(`Module ${module} is not implemented in framework yet`);
   });

@@ -244,13 +244,15 @@ const mockAPI: DeskKleanAPI = {
     totalReclaimableBytes: 2808200000,
   }),
 
-  executeSmartClean: async (): Promise<SmartCleanResult> => {
+  executeSmartClean: async (): Promise<ExecuteResult> => {
     return {
-      success: false,
-      cleanedSizeBytes: 0,
-      cleanedItemCount: 0,
-      errors: [{ path: '', error: 'Execution disabled in Phase 5 (read-only scan)' }],
-      cleanedAt: new Date().toISOString(),
+      success: true,
+      completed: 3,
+      failed: 0,
+      skipped: 0,
+      reclaimableBytes: 2808200000,
+      failures: [],
+      message: 'Cleaned mock files through Phase 6 framework',
     };
   },
 

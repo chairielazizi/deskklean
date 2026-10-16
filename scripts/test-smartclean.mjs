@@ -13,17 +13,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let categoriesModule;
 let scanModule;
 let protectedModule;
+let executeModule;
+let frameworkPlanModule;
 
 try {
   categoriesModule = require('../dist/main/system/smartclean/categories.js');
   scanModule = require('../dist/main/system/smartclean/scan.js');
   protectedModule = require('../dist/main/system/framework/protected.js');
+  executeModule = require('../dist/main/system/smartclean/execute.js');
+  frameworkPlanModule = require('../dist/main/system/framework/plan.js');
 } catch {
   const { execSync } = require('child_process');
   execSync('npm run build:main', { cwd: path.resolve(__dirname, '..'), stdio: 'inherit' });
   categoriesModule = require('../dist/main/system/smartclean/categories.js');
   scanModule = require('../dist/main/system/smartclean/scan.js');
   protectedModule = require('../dist/main/system/framework/protected.js');
+  executeModule = require('../dist/main/system/smartclean/execute.js');
+  frameworkPlanModule = require('../dist/main/system/framework/plan.js');
 }
 
 const {
@@ -43,6 +49,8 @@ const {
 } = scanModule;
 
 const { validatePath } = protectedModule;
+const { createSmartCleanPlan, planSmartClean, executeSmartClean } = executeModule;
+const { getOperationPlan } = frameworkPlanModule;
 
 let failedCount = 0;
 let passedCount = 0;
@@ -620,6 +628,647 @@ async function runTests() {
     }
   }
 
+  console.log('\n=== Section 7: Phase 6 Plan Conversion & Framework Execution Rails ===\n');
+
+  // 12. Plan conversion from a scan result
+  {
+    const mockReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 45,
+      categories: [
+        {
+          id: 'user-temp',
+          name: 'User Temporary Files',
+          path: 'C:\\Users\\Alice\\AppData\\Local\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 1200,
+          fileCount: 2,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'permanent',
+          files: [
+            { path: 'C:\\Users\\Alice\\AppData\\Local\\Temp\\file1.tmp', sizeBytes: 800 },
+            { path: 'C:\\Users\\Alice\\AppData\\Local\\Temp\\file2.tmp', sizeBytes: 400 },
+          ],
+        },
+        {
+          id: 'recent-documents',
+          name: 'Recent Documents',
+          path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 350,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'recycle-bin',
+          files: [
+            { path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\doc.lnk', sizeBytes: 350 },
+          ],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 1550,
+    };
+
+    const plan = createSmartCleanPlan(mockReport, ['user-temp', 'recent-documents']);
+
+    assert(
+      plan !== null && typeof plan === 'object',
+      '12a. createSmartCleanPlan returns an OperationPlan object'
+    );
+    assert(
+      typeof plan.id === 'string' && plan.id.startsWith('plan-'),
+      '12b. Plan receives stable unique ID prefixed with plan-',
+      `Got plan id: ${plan.id}`
+    );
+    assert(
+      plan.module === 'smart-clean',
+      '12c. Plan module is "smart-clean"',
+      `Got module: ${plan.module}`
+    );
+    assert(
+      getOperationPlan(plan.id) !== undefined,
+      '12d. Plan is registered and retrievable from framework store'
+    );
+    assert(
+      plan.actions.length === 3,
+      '12e. Plan emits actions for files in scanned categories (2 from user-temp, 1 from recent-documents)',
+      `Got ${plan.actions.length} actions`
+    );
+
+    // Verify metadata on every action
+    for (const action of plan.actions) {
+      assert(
+        action.metadata && typeof action.metadata.categoryId === 'string',
+        `12f. Action "${action.id}" carries categoryId in metadata`,
+        `Metadata: ${JSON.stringify(action.metadata)}`
+      );
+      assert(
+        action.metadata.deletionMethod === 'permanent' || action.metadata.deletionMethod === 'recycle-bin',
+        `12g. Action "${action.id}" carries valid deletionMethod in metadata`
+      );
+      assert(
+        typeof action.metadata.adminRequired === 'boolean',
+        `12h. Action "${action.id}" carries adminRequired flag in metadata`
+      );
+    }
+  }
+
+  // 13. reclaimableBytes equals the scan sum (and never estimated)
+  {
+    const mockReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 30,
+      categories: [
+        {
+          id: 'user-temp',
+          name: 'User Temp',
+          path: 'C:\\Users\\Alice\\AppData\\Local\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 5000,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Local\\Temp\\big.tmp', sizeBytes: 5000 }],
+        },
+        {
+          id: 'system-temp',
+          name: 'System Temp',
+          path: 'C:\\Windows\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 3000,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Windows\\Temp\\sys.tmp', sizeBytes: 3000 }],
+        },
+        {
+          id: 'unselected-cat',
+          name: 'Unselected',
+          path: 'C:\\Users\\Alice\\AppData\\Local\\D3DSCACHE',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 99999,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Local\\D3DSCACHE\\cache.bin', sizeBytes: 99999 }],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 107999,
+    };
+
+    const plan = createSmartCleanPlan(mockReport, ['user-temp', 'system-temp']);
+
+    assert(
+      plan.totalReclaimableBytes === 8000,
+      '13a. plan.totalReclaimableBytes equals exact sum of selected categories (5000 + 3000 = 8000)',
+      `Got: ${plan.totalReclaimableBytes}`
+    );
+    assert(
+      plan.totalReclaimableBytes !== mockReport.totalReclaimableBytes,
+      '13b. Unselected category bytes (99999) are excluded from plan totalReclaimableBytes'
+    );
+
+    // Unmeasured category with reclaimableBytes: null
+    const unmeasuredReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 20,
+      categories: [
+        {
+          id: 'system-restore',
+          name: 'System Restore',
+          path: 'vssadmin',
+          verdict: 'CONDITIONAL',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: null,
+          fileCount: 3,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 0,
+    };
+
+    const unmeasuredPlan = createSmartCleanPlan(unmeasuredReport, ['system-restore']);
+    assert(
+      unmeasuredPlan.totalReclaimableBytes === null,
+      '13c. Category with null reclaimableBytes produces null plan total (never guessed as 0)',
+      `Got: ${unmeasuredPlan.totalReclaimableBytes}`
+    );
+  }
+
+  // 14. Reversibility correct per deletion method (decision D-R2-4)
+  {
+    const mockReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 15,
+      categories: [
+        {
+          id: 'recent-documents',
+          name: 'Recent Documents',
+          path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 100,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'recycle-bin',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\a.lnk', sizeBytes: 100 }],
+        },
+        {
+          id: 'jump-lists',
+          name: 'Jump Lists',
+          path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AutomaticDestinations',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 200,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'recycle-bin',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\b.dest', sizeBytes: 200 }],
+        },
+        {
+          id: 'user-temp',
+          name: 'User Temp',
+          path: 'C:\\Users\\Alice\\AppData\\Local\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 300,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Local\\Temp\\c.tmp', sizeBytes: 300 }],
+        },
+        {
+          id: 'windows-old',
+          name: 'Windows.old',
+          path: 'C:\\Windows.old',
+          verdict: 'CONDITIONAL',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 4000,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          consequence: 'Permanent loss of rollback to previous Windows version.',
+          files: [{ path: 'C:\\Windows.old\\old.sys', sizeBytes: 4000 }],
+        },
+        {
+          id: 'system-restore',
+          name: 'System Restore Points',
+          path: 'vssadmin',
+          verdict: 'CONDITIONAL',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: null,
+          fileCount: 2,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          consequence: 'Permanent loss of all restore points.',
+          files: [],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 4600,
+    };
+
+    // 14a. Reversible plan for user data (Recycle Bin)
+    const revPlan = createSmartCleanPlan(mockReport, ['recent-documents', 'jump-lists']);
+    assert(
+      revPlan.reversibility === 'reversible',
+      '14a. User data categories deleted to Recycle Bin produce reversible plan',
+      `Got: ${revPlan.reversibility}`
+    );
+    assert(
+      revPlan.irreversibilityReason === undefined,
+      '14b. Reversible plan has no irreversibilityReason'
+    );
+
+    // 14c. Irreversible plan for permanent system junk
+    const irrevPlan = createSmartCleanPlan(mockReport, ['user-temp']);
+    assert(
+      irrevPlan.reversibility === 'irreversible',
+      '14c. Permanent delete category produces irreversible plan',
+      `Got: ${irrevPlan.reversibility}`
+    );
+    assert(
+      typeof irrevPlan.irreversibilityReason === 'string' && irrevPlan.irreversibilityReason.length > 0,
+      '14d. Irreversible plan has non-empty irreversibilityReason',
+      `Reason: ${irrevPlan.irreversibilityReason}`
+    );
+
+    // 14e. Windows.old consequence stated in reason
+    const winOldPlan = createSmartCleanPlan(mockReport, ['windows-old']);
+    assert(
+      winOldPlan.reversibility === 'irreversible',
+      '14e. Windows.old deletion is irreversible'
+    );
+    assert(
+      typeof winOldPlan.irreversibilityReason === 'string' &&
+        winOldPlan.irreversibilityReason.toLowerCase().includes('windows.old') &&
+        winOldPlan.irreversibilityReason.toLowerCase().includes('rollback'),
+      '14f. Windows.old plan explicitly states rollback loss consequence in reason',
+      `Reason: ${winOldPlan.irreversibilityReason}`
+    );
+
+    // 14g. System Restore points consequence stated in reason
+    const sysRestorePlan = createSmartCleanPlan(mockReport, ['system-restore']);
+    assert(
+      sysRestorePlan.reversibility === 'irreversible',
+      '14g. System restore point deletion is irreversible'
+    );
+    assert(
+      typeof sysRestorePlan.irreversibilityReason === 'string' &&
+        sysRestorePlan.irreversibilityReason.toLowerCase().includes('restore') &&
+        sysRestorePlan.irreversibilityReason.toLowerCase().includes('vss'),
+      '14h. System Restore plan explicitly states restore points loss via VSS in reason',
+      `Reason: ${sysRestorePlan.irreversibilityReason}`
+    );
+  }
+
+  // 15. A protected path refused before entering the plan
+  {
+    const mockReportWithProtected = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 25,
+      categories: [
+        {
+          id: 'legit-temp',
+          name: 'Legit Temp',
+          path: 'C:\\Windows\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 100,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Windows\\Temp\\junk.tmp', sizeBytes: 100 }],
+        },
+        {
+          id: 'malicious-sys32',
+          name: 'Protected System32 Attempt',
+          path: 'C:\\Windows\\System32',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 999999,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Windows\\System32\\cmd.exe', sizeBytes: 999999 }],
+        },
+        {
+          id: 'malicious-sysroot',
+          name: 'Protected Root Attempt',
+          path: 'C:\\Windows',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 12345,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 1012444,
+    };
+
+    const plan = createSmartCleanPlan(mockReportWithProtected, [
+      'legit-temp',
+      'malicious-sys32',
+      'malicious-sysroot',
+    ]);
+
+    // Ensure protected paths never enter actions
+    const hasSys32Action = plan.actions.some((a) => a.target.toLowerCase().includes('system32'));
+    const hasSysRootAction = plan.actions.some(
+      (a) => a.target.toLowerCase() === 'c:\\windows' || a.target.toLowerCase() === 'c:/windows'
+    );
+
+    assert(
+      !hasSys32Action,
+      '15a. Protected System32 path is NOT included in plan.actions'
+    );
+    assert(
+      !hasSysRootAction,
+      '15b. Protected SystemRoot path is NOT included in plan.actions'
+    );
+    assert(
+      plan.blocked.length >= 2,
+      '15c. Protected targets are recorded in plan.blocked array',
+      `Blocked count: ${plan.blocked.length}`
+    );
+
+    const blockedTargets = plan.blocked.map((b) => b.target.toLowerCase());
+    assert(
+      blockedTargets.some((t) => t.includes('system32')),
+      '15d. System32 is recorded in plan.blocked'
+    );
+    assert(
+      blockedTargets.some((t) => t.includes('windows')),
+      '15e. Windows root is recorded in plan.blocked'
+    );
+
+    const hasReason = plan.blocked.every((b) => typeof b.reason === 'string' && b.reason.length > 0);
+    assert(
+      hasReason,
+      '15f. Every blocked action provides an explicit refusal reason'
+    );
+
+    // Legit subpath is included
+    const hasLegit = plan.actions.some((a) => a.target.toLowerCase().includes('junk.tmp'));
+    assert(
+      hasLegit,
+      '15g. Allowed safe subpath (C:\\Windows\\Temp\\junk.tmp) is permitted in plan.actions'
+    );
+  }
+
+  // 16. Unelevated run with an admin category refused
+  {
+    const mockReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 20,
+      categories: [
+        {
+          id: 'user-temp',
+          name: 'User Temp (Non-Admin)',
+          path: 'C:\\Users\\Alice\\AppData\\Local\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 500,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: false,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Users\\Alice\\AppData\\Local\\Temp\\test.tmp', sizeBytes: 500 }],
+        },
+        {
+          id: 'system-temp',
+          name: 'System Temp (Admin Required)',
+          path: 'C:\\Windows\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 1500,
+          fileCount: 1,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [{ path: 'C:\\Windows\\Temp\\admin.tmp', sizeBytes: 1500 }],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 2000,
+    };
+
+    // 16a. Plan requires elevation when admin category is included
+    const adminPlan = createSmartCleanPlan(mockReport, ['user-temp', 'system-temp']);
+    assert(
+      adminPlan.requiresElevation === true,
+      '16a. Plan with admin-required category has requiresElevation: true'
+    );
+
+    // 16b. Plan does not require elevation when only non-admin categories are included
+    const userOnlyPlan = createSmartCleanPlan(mockReport, ['user-temp']);
+    assert(
+      userOnlyPlan.requiresElevation === false,
+      '16b. Plan with only non-admin categories has requiresElevation: false'
+    );
+
+    // 16c. executeSmartClean refuses to run unelevated when admin category is present
+    const unelevatedExecutionResult = await executeSmartClean(
+      mockReport,
+      ['user-temp', 'system-temp'],
+      {
+        isElevatedFn: async () => false, // Simulate unelevated process
+      }
+    );
+
+    assert(
+      unelevatedExecutionResult.success === false,
+      '16c. Unelevated run with admin category returns success: false'
+    );
+    assert(
+      unelevatedExecutionResult.completed === 0,
+      '16d. Unelevated run completes 0 actions (refuses before touching anything)'
+    );
+    assert(
+      Array.isArray(unelevatedExecutionResult.failures) &&
+        unelevatedExecutionResult.failures.length > 0 &&
+        unelevatedExecutionResult.failures[0].error.toLowerCase().includes('administrator'),
+      '16e. Unelevated run reports Administrator rights requirement in failures array',
+      `Failures: ${JSON.stringify(unelevatedExecutionResult.failures)}`
+    );
+    assert(
+      typeof unelevatedExecutionResult.message === 'string' &&
+        unelevatedExecutionResult.message.toLowerCase().includes('administrator'),
+      '16f. Unelevated run message states Administrator rights required',
+      `Message: ${unelevatedExecutionResult.message}`
+    );
+  }
+
+  // 17. Empty-category safety guardrail (0 files) and exemptions
+  {
+    const mockReport = {
+      generatedAt: new Date().toISOString(),
+      scanDurationMs: 25,
+      categories: [
+        {
+          id: 'system-temp',
+          name: 'System Temp',
+          path: 'C:\\Windows\\Temp',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 0,
+          fileCount: 0,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [],
+        },
+        {
+          id: 'windows-old',
+          name: 'Windows.old',
+          path: 'C:\\Windows.old',
+          verdict: 'CONDITIONAL',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 0,
+          fileCount: 0,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          consequence: 'Permanent loss of rollback to previous Windows version.',
+          files: [],
+        },
+        {
+          id: 'memory-dump',
+          name: 'Kernel Memory Dump',
+          path: 'C:\\Windows\\MEMORY.DMP',
+          verdict: 'SAFE',
+          source: 'https://learn.microsoft.com',
+          reclaimableBytes: 0,
+          fileCount: 0,
+          inUseCount: 0,
+          status: 'scanned',
+          adminRequired: true,
+          deletionMethod: 'permanent',
+          files: [],
+        },
+      ],
+      excluded: EXCLUDED_CATEGORIES,
+      totalReclaimableBytes: 0,
+    };
+
+    // 17a. A normal directory category with empty files array produces ZERO actions targeting that path
+    const emptyTempPlan = createSmartCleanPlan(mockReport, ['system-temp']);
+    const tempActions = emptyTempPlan.actions.filter(
+      (a) => a.target.toLowerCase() === 'c:\\windows\\temp'
+    );
+    assert(
+      tempActions.length === 0,
+      '17a. Category whose files array is empty ([]) and whose path is a normal directory (C:\\Windows\\Temp) produces ZERO actions targeting that path',
+      `Expected 0 actions targeting C:\\Windows\\Temp, got ${tempActions.length}`
+    );
+    assert(
+      emptyTempPlan.actions.length === 0,
+      '17b. Empty normal directory category emits 0 actions total (never deletes folder itself)',
+      `Expected 0 actions, got ${emptyTempPlan.actions.length}`
+    );
+
+    // 17c. The windows-old category still produces a delete-tree even when its files array is empty
+    const winOldPlan = createSmartCleanPlan(mockReport, ['windows-old']);
+    const winOldAction = winOldPlan.actions.find((a) => a.id === 'windows-old');
+    assert(
+      winOldAction !== undefined,
+      '17c. The windows-old category still produces an action when its files array is empty',
+      `Expected action for windows-old, got ${winOldPlan.actions.map((a) => a.id).join(', ')}`
+    );
+    assert(
+      winOldAction?.kind === 'delete-tree',
+      '17d. The windows-old action kind is delete-tree',
+      `Expected kind "delete-tree", got "${winOldAction?.kind}"`
+    );
+    assert(
+      winOldAction?.target.toLowerCase() === 'c:\\windows.old',
+      '17e. The windows-old action targets C:\\Windows.old directory',
+      `Expected target C:\\Windows.old, got "${winOldAction?.target}"`
+    );
+
+    // 17f. A single-file category (path ending in .dmp) still produces a delete-file even when its files array is empty
+    const memDumpPlan = createSmartCleanPlan(mockReport, ['memory-dump']);
+    const memDumpAction = memDumpPlan.actions.find((a) => a.id === 'memory-dump');
+    assert(
+      memDumpAction !== undefined,
+      '17f. Single-file category (path ending in .dmp) still produces an action when its files array is empty',
+      `Expected action for memory-dump, got ${memDumpPlan.actions.map((a) => a.id).join(', ')}`
+    );
+    assert(
+      memDumpAction?.kind === 'delete-file',
+      '17g. Single-file category action kind is delete-file',
+      `Expected kind "delete-file", got "${memDumpAction?.kind}"`
+    );
+    assert(
+      memDumpAction?.target.toLowerCase() === 'c:\\windows\\memory.dmp',
+      '17h. Single-file category action targets C:\\Windows\\MEMORY.DMP file',
+      `Expected target C:\\Windows\\MEMORY.DMP, got "${memDumpAction?.target}"`
+    );
+
+    // 17i. Combined plan verifies guardrail and exemptions together
+    const combinedPlan = createSmartCleanPlan(mockReport, [
+      'system-temp',
+      'windows-old',
+      'memory-dump',
+    ]);
+    const combinedTempActions = combinedPlan.actions.filter(
+      (a) => a.target.toLowerCase() === 'c:\\windows\\temp'
+    );
+    assert(
+      combinedTempActions.length === 0,
+      '17i. Combined plan produces ZERO actions targeting empty directory C:\\Windows\\Temp',
+      `Expected 0 actions targeting C:\\Windows\\Temp in combined plan, got ${combinedTempActions.length}`
+    );
+    assert(
+      combinedPlan.actions.length === 2,
+      '17j. Combined plan contains exactly 2 actions (windows-old delete-tree and memory-dump delete-file)',
+      `Expected 2 actions, got ${combinedPlan.actions.length}`
+    );
+  }
+
   console.log('\n========================================');
   console.log(`Total tests: ${passedCount + failedCount}`);
   console.log(`Passed:      ${passedCount}`);
@@ -629,7 +1278,7 @@ async function runTests() {
   if (failedCount > 0) {
     process.exit(1);
   } else {
-    console.log('ALL PHASE 5 SMARTCLEAN TESTS PASSED!\n');
+    console.log('ALL PHASE 5 & 6 SMARTCLEAN TESTS PASSED!\n');
   }
 }
 

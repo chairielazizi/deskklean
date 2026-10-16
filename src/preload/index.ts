@@ -42,8 +42,8 @@ const api: DeskKleanAPI = {
   // Smart Clean
   scanSmartClean: (categories?: string[]): Promise<SmartCleanReport> =>
     ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_SCAN, categories),
-  executeSmartClean: (selectedSubcategoryIds: string[]): Promise<SmartCleanResult> =>
-    ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_EXECUTE, selectedSubcategoryIds),
+  executeSmartClean: (categoryIds?: string[]): Promise<ExecuteResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_EXECUTE, categoryIds),
 
   // Registry
   scanRegistry: (): Promise<RegistryIssue[]> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_SCAN),

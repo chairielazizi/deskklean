@@ -516,7 +516,7 @@ export interface DeskKleanAPI {
 
   // Smart Clean
   scanSmartClean: (categoryIds?: string[]) => Promise<SmartCleanReport>;
-  executeSmartClean: (selectedSubcategoryIds: string[]) => Promise<SmartCleanResult>;
+  executeSmartClean: (categoryIds?: string[]) => Promise<ExecuteResult>;
 
   // Registry
   scanRegistry: () => Promise<RegistryIssue[]>;

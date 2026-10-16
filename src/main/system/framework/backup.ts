@@ -381,3 +381,20 @@ export function listModuleBackups(
     return [];
   }
 }
+
+/**
+ * Writes a JSON file operation backup manifest to the shared backup store.
+ * Pattern: <userData>/backups/<module>/<ISO8601>-manifest.json
+ * Aborts and throws if directory creation or file writing fails.
+ */
+export function writeFileBackupManifest(
+  manifestPath: string,
+  manifest: Record<string, unknown>
+): void {
+  const dir = path.dirname(manifestPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+}
+
