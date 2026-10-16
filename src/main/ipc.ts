@@ -13,6 +13,7 @@ import {
   MotherboardInfo,
   NetworkInfo,
   HealthReport,
+  SmartCleanReport,
   SmartCleanScanResult,
   SmartCleanResult,
   RegistryIssue,
@@ -45,6 +46,7 @@ import {
   StartupDelayState,
   StartupBackup,
 } from './system/framework';
+import { scanSmartClean } from './system/smartclean/scan';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -707,45 +709,26 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- Smart Clean ---
-  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_SCAN, async (): Promise<SmartCleanScanResult> => {
-    const items = [...DEFAULT_CLEAN_CATEGORIES];
-    const totalSizeBytes = items.reduce((sum, item) => sum + item.sizeBytes, 0);
-    const totalItemCount = items.reduce((sum, item) => sum + item.itemCount, 0);
-
-    return {
-      items,
-      totalSizeBytes,
-      totalItemCount,
-      scanDurationMs: 1420,
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_EXECUTE, async (_, selectedSubcategoryIds: string[]): Promise<SmartCleanResult> => {
-    const selected = DEFAULT_CLEAN_CATEGORIES.filter((c) => selectedSubcategoryIds.includes(c.id));
-    const totalFreed = selected.reduce((sum, item) => sum + item.sizeBytes, 0);
-    const totalItems = selected.reduce((sum, item) => sum + item.itemCount, 0);
-
-    // Also attempt to clean actual temp dir if safe
-    try {
-      const tmpDir = os.tmpdir();
-      // Safe cleanup simulation / real temp files
-    } catch (e) {
-      // ignored
-    }
+  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_SCAN, async (_, enabledCategoryIds?: string[]): Promise<SmartCleanReport> => {
+    const report = await scanSmartClean(enabledCategoryIds);
 
     logActivity({
       module: 'smart-clean',
-      title: 'Smart Clean Performed',
-      detail: `Cleaned ${selected.length} categories, removed ${totalItems.toLocaleString()} items`,
-      type: 'success',
-      spaceFreedBytes: totalFreed,
+      title: 'Smart Clean Scan Completed',
+      detail: `Scanned ${report.categories.length} categories in ${report.scanDurationMs}ms, found ${report.totalReclaimableBytes.toLocaleString()} bytes`,
+      type: 'info',
     });
 
+    return report;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_EXECUTE, async (): Promise<SmartCleanResult> => {
+    // Phase 5 is read-only scan: deletion path is deferred to Phase 6
     return {
-      success: true,
-      cleanedSizeBytes: totalFreed,
-      cleanedItemCount: totalItems,
-      errors: [],
+      success: false,
+      cleanedSizeBytes: 0,
+      cleanedItemCount: 0,
+      errors: [{ path: '', error: 'Execution not supported in Phase 5 (read-only scan)' }],
       cleanedAt: new Date().toISOString(),
     };
   });

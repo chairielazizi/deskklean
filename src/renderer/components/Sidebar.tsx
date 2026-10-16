@@ -1,5 +1,6 @@
 import React from 'react';
 import { ModuleId } from '../../shared/types';
+import { formatBytes } from '../utils/format';
 import {
   LayoutDashboard,
   HeartPulse,
@@ -45,6 +46,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectModule,
   quickStats,
 }) => {
+  const smartCleanBadge = quickStats?.cleanableBytes !== undefined && quickStats.cleanableBytes > 0
+    ? formatBytes(quickStats.cleanableBytes)
+    : undefined;
+
+  const registryBadge = quickStats?.registryCount !== undefined && quickStats.registryCount > 0
+    ? `${quickStats.registryCount} Issues`
+    : undefined;
+
+  const startupBadge = quickStats?.startupCount !== undefined && quickStats.startupCount > 0
+    ? `${quickStats.startupCount} Slow`
+    : undefined;
+
   const groups: NavGroup[] = [
     {
       groupName: 'OVERVIEW',
@@ -70,21 +83,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
           id: 'smart-clean',
           label: 'Smart Clean',
           icon: Sparkles,
-          badge: '4.8 GB',
+          badge: smartCleanBadge,
           badgeColor: 'bg-teal-500/10 text-teal-300 border border-teal-500/20',
         },
         {
           id: 'registry-fixer',
           label: 'Registry Fixer',
           icon: Layers,
-          badge: '38 Issues',
+          badge: registryBadge,
           badgeColor: 'bg-amber-500/10 text-amber-300 border border-amber-500/20',
         },
         {
           id: 'startup-optimizer',
           label: 'Startup Optimizer',
           icon: Zap,
-          badge: '4 Slow',
+          badge: startupBadge,
           badgeColor: 'bg-rose-500/10 text-rose-300 border border-rose-500/20',
         },
       ],

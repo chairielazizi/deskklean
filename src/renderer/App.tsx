@@ -18,6 +18,7 @@ import { SystemInfo } from './components/SystemInfo';
 import { Settings } from './components/Settings';
 import { ElevationPrompt } from './components/ElevationPrompt';
 import { api } from './apiClient';
+import { dataCache } from './utils/dataCache';
 
 const App: React.FC = () => {
   const [currentModule, setCurrentModule] = useState<ModuleId>('dashboard');
@@ -25,6 +26,25 @@ const App: React.FC = () => {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [showElevationPrompt, setShowElevationPrompt] = useState(false);
+  const [, setCacheVersion] = useState(0);
+
+  useEffect(() => {
+    return dataCache.subscribe(() => setCacheVersion((v) => v + 1));
+  }, []);
+
+  const cachedSmartClean = dataCache.getSmartCleanReport();
+  const cachedStartup = dataCache.getStartupItems();
+
+  const slowStartupCount = cachedStartup
+    ? cachedStartup.filter(
+        (item) => item.enabled && (item.impact === 'High' || (item.bootDegradationSeconds ?? 0) >= 1)
+      ).length
+    : undefined;
+
+  const quickStats = {
+    cleanableBytes: cachedSmartClean?.totalReclaimableBytes,
+    startupCount: slowStartupCount,
+  };
 
   useEffect(() => {
     // Check if window is maximized on mount
@@ -130,6 +150,7 @@ const App: React.FC = () => {
         <Sidebar
           currentModule={currentModule}
           onSelectModule={handleNavigate}
+          quickStats={quickStats}
         />
 
         {/* Module content */}

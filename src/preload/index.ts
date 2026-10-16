@@ -4,6 +4,7 @@ import {
   DeskKleanAPI,
   SystemSpecs,
   HealthReport,
+  SmartCleanReport,
   SmartCleanScanResult,
   SmartCleanResult,
   RegistryIssue,
@@ -39,7 +40,7 @@ const api: DeskKleanAPI = {
   getHealthReport: (): Promise<HealthReport> => ipcRenderer.invoke(IPC_CHANNELS.HEALTH_GET_REPORT),
 
   // Smart Clean
-  scanSmartClean: (categories: string[]): Promise<SmartCleanScanResult> =>
+  scanSmartClean: (categories?: string[]): Promise<SmartCleanReport> =>
     ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_SCAN, categories),
   executeSmartClean: (selectedSubcategoryIds: string[]): Promise<SmartCleanResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_EXECUTE, selectedSubcategoryIds),

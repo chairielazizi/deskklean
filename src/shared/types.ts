@@ -125,7 +125,57 @@ export interface HealthIssue {
   deepLink: string;                       // which module's UI addresses it
 }
 
-// Smart Clean
+// Smart Clean (Phase 5 Read-Only Specification)
+export type SmartCleanVerdict = 'SAFE' | 'CONDITIONAL';
+export type ExcludedVerdict = 'RISKY' | 'CONDITIONAL';
+export type SmartCleanCategoryStatus = 'scanned' | 'partial' | 'failed' | 'not_measured';
+
+export interface SmartCleanFileEntry {
+  path: string;
+  sizeBytes: number;
+}
+
+export interface SmartCleanSkippedFile {
+  path: string;
+  reason: string;
+}
+
+export interface SmartCleanCategory {
+  id: string;                             // stable slug, e.g. 'user-temp'
+  name: string;                           // display name
+  path: string;                           // root path scanned
+  verdict: SmartCleanVerdict;             // from the research file
+  source: string;                         // URL the verdict came from
+  reclaimableBytes: number | null;        // null when not measurable
+  fileCount: number | null;               // null when not measurable
+  inUseCount: number;                     // files skipped because locked
+  status: SmartCleanCategoryStatus;
+  failureReason?: string;
+  files?: SmartCleanFileEntry[];
+  skippedFiles?: SmartCleanSkippedFile[];
+  adminRequired?: boolean;
+  deletionMethod?: 'permanent' | 'recycle-bin';
+  defaultEnabled?: boolean;
+  consequence?: string;
+}
+
+export interface ExcludedCategory {
+  name: string;
+  path: string;
+  reason: string;
+  verdict: ExcludedVerdict;
+  source?: string;
+}
+
+export interface SmartCleanReport {
+  generatedAt: string;
+  scanDurationMs: number;                 // real elapsed time
+  categories: SmartCleanCategory[];
+  excluded: ExcludedCategory[];           // always shown, with reasons
+  totalReclaimableBytes: number;          // sum of real measurements, never estimated
+}
+
+// Legacy Smart Clean Types (Retained for backwards compatibility)
 export type CleanItemCategory = 'windows' | 'browser' | 'application';
 
 export interface CleanSubcategory {
@@ -465,7 +515,7 @@ export interface DeskKleanAPI {
   getHealthReport: () => Promise<HealthReport>;
 
   // Smart Clean
-  scanSmartClean: (categories: string[]) => Promise<SmartCleanScanResult>;
+  scanSmartClean: (categoryIds?: string[]) => Promise<SmartCleanReport>;
   executeSmartClean: (selectedSubcategoryIds: string[]) => Promise<SmartCleanResult>;
 
   // Registry

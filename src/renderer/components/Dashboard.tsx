@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../apiClient';
-import { ModuleId, ActivityItem, SystemSpecs } from '../../shared/types';
+import { ModuleId, ActivityItem, SystemSpecs, StartupItem, SmartCleanReport } from '../../shared/types';
 import { formatBytes, formatDate } from '../utils/format';
+import { dataCache } from '../utils/dataCache';
 import {
   Sparkles,
   HeartPulse,
@@ -34,8 +35,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   });
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [smartCleanReport, setSmartCleanReport] = useState<SmartCleanReport | null>(() => dataCache.getSmartCleanReport());
+  const [startupItems, setStartupItems] = useState<StartupItem[] | null>(() => dataCache.getStartupItems());
 
   useEffect(() => {
+    const unsub = dataCache.subscribe(() => {
+      setSmartCleanReport(dataCache.getSmartCleanReport());
+      setStartupItems(dataCache.getStartupItems());
+    });
+
     const loadData = async () => {
       try {
         const [sysSpecs, logs] = await Promise.all([
@@ -44,6 +52,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
         ]);
         setSpecs(sysSpecs);
         setActivities(logs);
+
+        // Populate startup items into cache if missing
+        if (!dataCache.getStartupItems()) {
+          api.getStartupItems().then((items) => {
+            dataCache.setStartupItems(items);
+          }).catch(() => {});
+        }
       } catch (e) {
         console.error('Failed to load dashboard data:', e);
       }
@@ -58,7 +73,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       } catch (e) {}
     }, 2000);
 
-    return () => clearInterval(timer);
+    return () => {
+      unsub();
+      clearInterval(timer);
+    };
   }, []);
 
   const handleRefresh = async () => {
@@ -75,6 +93,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     } catch (e) {}
     setTimeout(() => setIsRefreshing(false), 500);
   };
+
+  const slowStartupCount = startupItems
+    ? startupItems.filter((item) => item.enabled && (item.impact === 'High' || (item.bootDegradationSeconds ?? 0) >= 1)).length
+    : null;
+
+  const totalBootDegradation = startupItems
+    ? startupItems.filter((item) => item.enabled).reduce((sum, item) => sum + (item.bootDegradationSeconds ?? 0), 0)
+    : null;
 
   const primaryDrive = specs?.drives?.[0] || {
     label: 'Local Disk (C:)',
@@ -114,9 +140,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
                 </span>
               </div>
               <p className="text-xs text-slate-400 max-w-lg leading-relaxed">
-                DeskKlean detected <strong className="text-emerald-400 font-semibold">4.8 GB</strong> of cleanable junk files,{' '}
-                <strong className="text-amber-400 font-semibold">38 registry issues</strong>, and{' '}
-                <strong className="text-rose-400 font-semibold">4 high-impact startup items</strong> affecting boot time.
+                {smartCleanReport ? (
+                  <>
+                    DeskKlean detected{' '}
+                    <strong className="text-emerald-400 font-semibold">
+                      {formatBytes(smartCleanReport.totalReclaimableBytes)}
+                    </strong>{' '}
+                    of cleanable junk files
+                  </>
+                ) : (
+                  <>Smart Clean is ready to scan temporary files and system caches</>
+                )}
+                {slowStartupCount !== null && slowStartupCount > 0 ? (
+                  <>
+                    , and{' '}
+                    <strong className="text-rose-400 font-semibold">
+                      {slowStartupCount} startup items
+                    </strong>{' '}
+                    affecting boot time.
+                  </>
+                ) : (
+                  '.'
+                )}
               </p>
               <div className="flex items-center gap-4 pt-1 text-[11px] text-slate-400">
                 <span className="flex items-center gap-1">
@@ -166,8 +211,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="space-y-1">
-            <div className="text-2xl font-black text-white font-mono">4.89 GB</div>
-            <p className="text-[11px] text-slate-400">Reclaimable from temp & caches</p>
+            <div className="text-2xl font-black text-white font-mono">
+              {smartCleanReport ? formatBytes(smartCleanReport.totalReclaimableBytes) : 'Scan Ready'}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {smartCleanReport ? 'Reclaimable from temp & caches' : 'Click to run real scan'}
+            </p>
           </div>
           <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-emerald-400 font-medium">
             <span>Clean now</span>
@@ -214,8 +263,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="space-y-1">
-            <div className="text-2xl font-black text-white font-mono">4 High Impact</div>
-            <p className="text-[11px] text-slate-400">Slows boot by ~4.8 seconds</p>
+            <div className="text-2xl font-black text-white font-mono">
+              {slowStartupCount !== null ? `${slowStartupCount} High Impact` : 'Ready'}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              {totalBootDegradation !== null && totalBootDegradation > 0
+                ? `Slows boot by ~${totalBootDegradation.toFixed(1)} seconds`
+                : 'Review startup impact'}
+            </p>
           </div>
           <div className="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-rose-400 font-medium">
             <span>Speed up boot</span>
