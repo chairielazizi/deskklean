@@ -102,15 +102,12 @@ degradation times, which Phase 2's boot-impact column consumes.
 
 ---
 
-## Residuals — still live, both one-liners
+## Residuals — Resolved ✅
 
-Neither has been fixed; both are queued for the next agy run.
+Both previously queued honesty defects have been resolved:
 
-1. **`fileSystem: ld.FileSystem || 'NTFS'`** (`src/main/ipc.ts:421`) — an
-   invented default when the field is missing. Should be `null`, like the other
-   unreadable values.
-2. **`healthStatus` defaults to `'good'`** (`src/main/ipc.ts:388`) — mildly
-   optimistic rather than neutral when health data is unavailable.
+1. **`fileSystem: ld.FileSystem || null`** (`src/main/ipc.ts`) — removed the invented `'NTFS'` default; unreadable/missing values now strictly degrade to `null`.
+2. **`healthStatus` strictly evaluated** (`src/main/ipc.ts`) — removed optimistic fallback to `'good'`; now explicitly maps `0 -> 'good'`, `1 -> 'warning'`, `2 -> 'bad'`, and degrades to `null` if health data is unavailable or unreadable.
 
-Both violate the standing rule that a value that cannot be read is `null`, never
-invented. They are the only known honesty defects in an otherwise real module.
+With these resolved, Phase 1 strictly complies with the standing rule: any value that cannot be read is `null`, never invented.
+

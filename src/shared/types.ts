@@ -57,8 +57,8 @@ export interface DriveInfo {
   usedBytes: number;
   freeBytes: number;
   usagePercent: number | null;
-  fileSystem: string;
-  healthStatus: 'good' | 'warning' | 'bad' | 'critical';
+  fileSystem: string | null;
+  healthStatus: 'good' | 'warning' | 'bad' | 'critical' | null;
 }
 
 export interface GPUInfo {

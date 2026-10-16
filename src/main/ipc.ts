@@ -381,7 +381,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
             : null;
 
         let driveType = 'Unknown';
-        let healthStatus: 'good' | 'warning' | 'bad' = 'good';
+        let healthStatus: 'good' | 'warning' | 'bad' | 'critical' | null = null;
 
         const mediaType = physDisk?.MediaType;
         const busType = physDisk?.BusType ?? disk?.BusType;
@@ -400,12 +400,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           driveType = 'Unknown';
         }
 
-        if (healthRaw === 1) {
+        if (healthRaw === 0) {
+          healthStatus = 'good';
+        } else if (healthRaw === 1) {
           healthStatus = 'warning';
         } else if (healthRaw === 2) {
           healthStatus = 'bad';
         } else {
-          healthStatus = 'good';
+          healthStatus = null;
         }
 
         const totalBytes = toNumber(ld.Size) ?? 0;
@@ -414,7 +416,7 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
         const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
         const mount = ld.DeviceID ? (ld.DeviceID.endsWith('\\') ? ld.DeviceID : `${ld.DeviceID}\\`) : 'C:\\';
         const label = ld.VolumeName || (ld.DeviceID ? `Local Disk (${ld.DeviceID})` : 'Local Disk');
-        const fileSystem = ld.FileSystem || 'NTFS';
+        const fileSystem = ld.FileSystem || null;
         const id = (ld.DeviceID || 'c').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'c';
 
         return {
