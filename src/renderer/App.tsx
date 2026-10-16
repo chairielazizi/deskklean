@@ -78,7 +78,7 @@ const App: React.FC = () => {
       case 'dashboard':
         return <Dashboard onNavigate={handleNavigate} />;
       case 'health-check':
-        return <HealthCheck />;
+        return <HealthCheck onNavigate={handleNavigate} />;
       case 'smart-clean':
         return <SmartClean />;
       case 'registry-fixer':

@@ -1,4 +1,4 @@
-import { SystemSpecs, StartupItem } from '../../shared/types';
+import { SystemSpecs, StartupItem, HealthReport } from '../../shared/types';
 
 interface CacheEntry<T> {
   data: T;
@@ -9,10 +9,13 @@ interface CacheEntry<T> {
 const DEFAULT_SPECS_TTL_MS = 5 * 60 * 1000;
 // Startup items TTL (2 minutes)
 const DEFAULT_STARTUP_TTL_MS = 2 * 60 * 1000;
+// Health report TTL (5 minutes)
+const DEFAULT_HEALTH_TTL_MS = 5 * 60 * 1000;
 
 class DataCache {
   private specs: CacheEntry<SystemSpecs> | null = null;
   private startupItems: CacheEntry<StartupItem[]> | null = null;
+  private healthReport: CacheEntry<HealthReport> | null = null;
 
   // --- System Specs ---
   getSystemSpecs(): SystemSpecs | null {
@@ -57,10 +60,29 @@ class DataCache {
     this.startupItems = null;
   }
 
+  // --- Health Report ---
+  getHealthReport(): HealthReport | null {
+    return this.healthReport?.data ?? null;
+  }
+
+  isHealthReportStale(maxAgeMs = DEFAULT_HEALTH_TTL_MS): boolean {
+    if (!this.healthReport) return true;
+    return Date.now() - this.healthReport.timestamp > maxAgeMs;
+  }
+
+  setHealthReport(data: HealthReport): void {
+    this.healthReport = { data: { ...data }, timestamp: Date.now() };
+  }
+
+  clearHealthReport(): void {
+    this.healthReport = null;
+  }
+
   // --- Global ---
   clearAll(): void {
     this.specs = null;
     this.startupItems = null;
+    this.healthReport = null;
   }
 }
 

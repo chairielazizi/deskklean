@@ -96,26 +96,33 @@ export interface SystemSpecs {
 }
 
 // Health Check
-export type HealthCategory = 'privacy' | 'junk' | 'registry' | 'startup' | 'security';
-export type IssueSeverity = 'low' | 'medium' | 'high' | 'critical';
-
-export interface HealthIssue {
-  id: string;
-  category: HealthCategory;
-  title: string;
-  description: string;
-  count: number;
-  spaceReclaimableBytes: number;
-  severity: IssueSeverity;
-  fixable: boolean;
-  selected: boolean;
+export interface HealthReport {
+  generatedAt: string;                    // ISO 8601
+  score: number | null;                   // null when zero components measured
+  components: HealthComponentResult[];    // one per constituent module
+  unmeasured: string[];                   // names of modules not yet built
 }
 
-export interface HealthCheckResult {
-  score: number;
-  issues: HealthIssue[];
-  scannedAt: string;
-  totalSpaceBytes: number;
+export interface HealthComponentResult {
+  module: string;                         // 'SmartClean' | 'SystemInfo' | ...
+  status: 'ok' | 'partial' | 'failed' | 'not_built';
+  measurements: HealthMeasurement[];      // real values only
+  issues: HealthIssue[];                  // derived from real measurements only
+}
+
+export interface HealthMeasurement {
+  label: string;                          // e.g. 'Free disk space (C:)'
+  value: number;                          // bytes, count, or percent — never null
+  unit: 'bytes' | 'count' | 'percent';
+  source: string;                         // which module returned it
+}
+
+export interface HealthIssue {
+  module: string;
+  severity: 'info' | 'warning' | 'critical';
+  description: string;
+  measurementRef: string;                 // label of the measurement that triggered it
+  deepLink: string;                       // which module's UI addresses it
 }
 
 // Smart Clean
@@ -455,8 +462,7 @@ export interface DeskKleanAPI {
   getTelemetry: () => Promise<{ cpu: number; memory: number; diskRead: number; diskWrite: number }>;
 
   // Health Check
-  runHealthCheckScan: () => Promise<HealthCheckResult>;
-  fixHealthIssues: (issueIds: string[]) => Promise<{ success: boolean; fixedCount: number; freedBytes: number }>;
+  getHealthReport: () => Promise<HealthReport>;
 
   // Smart Clean
   scanSmartClean: (categories: string[]) => Promise<SmartCleanScanResult>;

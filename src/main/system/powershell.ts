@@ -10,6 +10,31 @@ export interface PowerShellOptions {
  */
 export const isWindows = (): boolean => process.platform === 'win32';
 
+const MAX_CONCURRENT_POWERSHELL = 3;
+let activeProcesses = 0;
+const processQueue: (() => void)[] = [];
+
+function acquireSlot(): Promise<void> {
+  if (activeProcesses < MAX_CONCURRENT_POWERSHELL) {
+    activeProcesses++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    processQueue.push(() => {
+      activeProcesses++;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  activeProcesses--;
+  if (processQueue.length > 0 && activeProcesses < MAX_CONCURRENT_POWERSHELL) {
+    const next = processQueue.shift();
+    if (next) next();
+  }
+}
+
 /**
  * Executes a PowerShell script by spawning powershell.exe.
  * Rejects immediately on non-Windows platforms.
@@ -18,7 +43,7 @@ export const isWindows = (): boolean => process.platform === 'win32';
  * @param opts - Execution options including timeoutMs (default: 15000 ms).
  * @returns Trimmed stdout string from PowerShell.
  */
-export const runPowerShell = (
+export const runPowerShell = async (
   script: string,
   opts?: PowerShellOptions
 ): Promise<string> => {
@@ -26,6 +51,18 @@ export const runPowerShell = (
     return Promise.reject(new Error('Windows-only operation'));
   }
 
+  await acquireSlot();
+  try {
+    return await executeChild(script, opts);
+  } finally {
+    releaseSlot();
+  }
+};
+
+const executeChild = (
+  script: string,
+  opts?: PowerShellOptions
+): Promise<string> => {
   const timeoutMs = opts?.timeoutMs ?? 15000;
 
   return new Promise<string>((resolve, reject) => {

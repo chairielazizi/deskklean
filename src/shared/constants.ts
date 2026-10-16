@@ -20,8 +20,7 @@ export const IPC_CHANNELS = {
   SYSTEM_GET_TELEMETRY: 'system:getTelemetry',
 
   // Health Check
-  HEALTH_SCAN: 'health:scan',
-  HEALTH_FIX: 'health:fix',
+  HEALTH_GET_REPORT: 'health:getReport',
 
   // Smart Clean
   SMART_CLEAN_SCAN: 'smartClean:scan',

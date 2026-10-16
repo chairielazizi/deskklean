@@ -12,7 +12,7 @@ import {
   GPUInfo,
   MotherboardInfo,
   NetworkInfo,
-  HealthCheckResult,
+  HealthReport,
   SmartCleanScanResult,
   SmartCleanResult,
   RegistryIssue,
@@ -72,6 +72,7 @@ import {
   mediaTypeLabel,
   busTypeLabel,
 } from './system/parse';
+import { generateHealthReport, HEALTH_SCORE_FORMULA_VERSION } from './system/health';
 
 export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const userDataDir = app.getPath('userData');
@@ -410,9 +411,20 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
           healthStatus = null;
         }
 
+        const volumeName = (ld.VolumeName || '').trim();
+        const isGoogleDrive = volumeName.toLowerCase().includes('google drive');
+
         const totalBytes = toNumber(ld.Size) ?? 0;
-        const freeBytes = toNumber(ld.FreeSpace) ?? 0;
-        const usedBytes = Math.max(0, totalBytes - freeBytes);
+        let freeBytes = toNumber(ld.FreeSpace) ?? 0;
+        let usedBytes = Math.max(0, totalBytes - freeBytes);
+
+        if (isGoogleDrive && totalBytes > 0) {
+          // Google Drive Desktop FAT32 virtual filesystem reports occupied cloud data in FreeSpace.
+          usedBytes = toNumber(ld.FreeSpace) ?? 0;
+          freeBytes = Math.max(0, totalBytes - usedBytes);
+          driveType = 'Cloud Drive (Google Drive)';
+        }
+
         const usagePercent = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
         const mount = ld.DeviceID ? (ld.DeviceID.endsWith('\\') ? ld.DeviceID : `${ld.DeviceID}\\`) : 'C:\\';
         const label = ld.VolumeName || (ld.DeviceID ? `Local Disk (${ld.DeviceID})` : 'Local Disk');
@@ -588,124 +600,98 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     return result;
   });
 
-  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_TELEMETRY, async () => {
+  let prevCpuTimes: { idle: number; total: number } | null = null;
+
+  function getInstantCpuUsage(): number | null {
+    const cpus = os.cpus();
+    if (!cpus || cpus.length === 0) return null;
+    let idle = 0;
+    let total = 0;
+    for (const cpu of cpus) {
+      for (const type in cpu.times) {
+        total += (cpu.times as Record<string, number>)[type];
+      }
+      idle += cpu.times.idle;
+    }
+    if (!prevCpuTimes) {
+      prevCpuTimes = { idle, total };
+      return null;
+    }
+    const idleDiff = idle - prevCpuTimes.idle;
+    const totalDiff = total - prevCpuTimes.total;
+    prevCpuTimes = { idle, total };
+    return totalDiff > 0 ? Math.max(0, Math.min(100, Math.round(((totalDiff - idleDiff) / totalDiff) * 100))) : 0;
+  }
+
+  // Pre-seed baseline CPU counters
+  getInstantCpuUsage();
+
+  let inFlightTelemetry: Promise<{ cpu: number; memory: number; diskRead: number; diskWrite: number }> | null = null;
+
+  ipcMain.handle(IPC_CHANNELS.SYSTEM_GET_TELEMETRY, () => {
     if (!isWindows()) {
       throw new Error('System telemetry is only available on Windows');
     }
 
-    const totalMem = os.totalmem();
-    const freeMem = os.freemem();
-    const memUsage = totalMem > 0 ? Math.round(((totalMem - freeMem) / totalMem) * 100) : 0;
+    if (inFlightTelemetry) {
+      return inFlightTelemetry;
+    }
 
-    let cpuUsage = 0;
-    try {
-      const cpuPerf = await getCpuPerformance({ timeoutMs: 8000 });
-      if (cpuPerf !== null) {
-        cpuUsage = Math.round(cpuPerf);
+    inFlightTelemetry = (async () => {
+      try {
+        const totalMem = os.totalmem();
+        const freeMem = os.freemem();
+        const memUsage = totalMem > 0 ? Math.round(((totalMem - freeMem) / totalMem) * 100) : 0;
+
+        let cpuUsage = 0;
+        const instantCpu = getInstantCpuUsage();
+        if (instantCpu !== null) {
+          cpuUsage = instantCpu;
+        } else {
+          try {
+            const cpuPerf = await getCpuPerformance({ timeoutMs: 5000 });
+            if (cpuPerf !== null) {
+              cpuUsage = Math.round(cpuPerf);
+            }
+          } catch (err) {
+            console.warn('Failed to get CPU telemetry:', err);
+          }
+        }
+
+        let diskReadMb = 0;
+        let diskWriteMb = 0;
+        try {
+          const diskPerf = await getDiskPerformance({ timeoutMs: 5000 });
+          diskReadMb = Math.round((diskPerf.diskReadBytesSec / (1024 * 1024)) * 10) / 10;
+          diskWriteMb = Math.round((diskPerf.diskWriteBytesSec / (1024 * 1024)) * 10) / 10;
+        } catch (err) {
+          console.warn('Failed to get disk telemetry:', err);
+        }
+
+        return {
+          cpu: cpuUsage,
+          memory: memUsage,
+          diskRead: diskReadMb,
+          diskWrite: diskWriteMb,
+        };
+      } finally {
+        inFlightTelemetry = null;
       }
-    } catch (err) {
-      console.warn('Failed to get CPU telemetry:', err);
-    }
+    })();
 
-    let diskReadMb = 0;
-    let diskWriteMb = 0;
-    try {
-      const diskPerf = await getDiskPerformance({ timeoutMs: 8000 });
-      diskReadMb = Math.round((diskPerf.diskReadBytesSec / (1024 * 1024)) * 10) / 10;
-      diskWriteMb = Math.round((diskPerf.diskWriteBytesSec / (1024 * 1024)) * 10) / 10;
-    } catch (err) {
-      console.warn('Failed to get disk telemetry:', err);
-    }
-
-    return {
-      cpu: cpuUsage,
-      memory: memUsage,
-      diskRead: diskReadMb,
-      diskWrite: diskWriteMb,
-    };
+    return inFlightTelemetry;
   });
 
   // --- Health Check ---
-  ipcMain.handle(IPC_CHANNELS.HEALTH_SCAN, async (): Promise<HealthCheckResult> => {
-    // Return comprehensive scan results across categories
-    return {
-      score: 74,
-      scannedAt: new Date().toISOString(),
-      totalSpaceBytes: 4890000000, // ~4.89 GB
-      issues: [
-        {
-          id: 'hc-1',
-          category: 'junk',
-          title: 'Windows System Temp Files & Memory Dumps',
-          description: 'Obsolete installer caches, crash dumps, and temp files accumulating in AppData',
-          count: 1450,
-          spaceReclaimableBytes: 2840000000,
-          severity: 'high',
-          fixable: true,
-          selected: true,
-        },
-        {
-          id: 'hc-2',
-          category: 'privacy',
-          title: 'Browser Tracking Cookies & Web Caches',
-          description: 'Chrome and Edge site tracking cookies, cache bundles, and session history',
-          count: 4210,
-          spaceReclaimableBytes: 1650000000,
-          severity: 'medium',
-          fixable: true,
-          selected: true,
-        },
-        {
-          id: 'hc-3',
-          category: 'registry',
-          title: 'Invalid Registry Keys & Broken Shortcuts',
-          description: 'Orphaned CLSIDs, missing shared DLL references, and stale uninstall entries',
-          count: 38,
-          spaceReclaimableBytes: 0,
-          severity: 'medium',
-          fixable: true,
-          selected: true,
-        },
-        {
-          id: 'hc-4',
-          category: 'startup',
-          title: 'Unnecessary Startup Applications',
-          description: '4 startup apps causing high boot latency: Steam, Spotify, Epic Launcher, Discord',
-          count: 4,
-          spaceReclaimableBytes: 0,
-          severity: 'high',
-          fixable: true,
-          selected: true,
-        },
-        {
-          id: 'hc-5',
-          category: 'security',
-          title: 'Outdated Third-Party Application Leftovers',
-          description: 'Leftover configuration directories from previously uninstalled applications',
-          count: 7,
-          spaceReclaimableBytes: 400000000,
-          severity: 'low',
-          fixable: true,
-          selected: true,
-        },
-      ],
-    };
-  });
-
-  ipcMain.handle(IPC_CHANNELS.HEALTH_FIX, async (_, issueIds: string[]) => {
-    const freedBytes = 4890000000;
+  ipcMain.handle(IPC_CHANNELS.HEALTH_GET_REPORT, async (): Promise<HealthReport> => {
+    const report = await generateHealthReport();
     logActivity({
       module: 'health-check',
-      title: 'Health Check One-Click Fix',
-      detail: `Resolved ${issueIds.length} system health issues and reclaimed space`,
-      type: 'success',
-      spaceFreedBytes: freedBytes,
+      title: 'Health Check Report Generated',
+      detail: `Health score: ${report.score !== null ? report.score : 'not measured'} (formula v${HEALTH_SCORE_FORMULA_VERSION})`,
+      type: 'info',
     });
-    return {
-      success: true,
-      fixedCount: issueIds.length,
-      freedBytes,
-    };
+    return report;
   });
 
   // --- Smart Clean ---

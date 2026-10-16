@@ -3,7 +3,7 @@ import { IPC_CHANNELS } from '../shared/constants';
 import {
   DeskKleanAPI,
   SystemSpecs,
-  HealthCheckResult,
+  HealthReport,
   SmartCleanScanResult,
   SmartCleanResult,
   RegistryIssue,
@@ -36,8 +36,7 @@ const api: DeskKleanAPI = {
   getTelemetry: () => ipcRenderer.invoke(IPC_CHANNELS.SYSTEM_GET_TELEMETRY),
 
   // Health Check
-  runHealthCheckScan: (): Promise<HealthCheckResult> => ipcRenderer.invoke(IPC_CHANNELS.HEALTH_SCAN),
-  fixHealthIssues: (issueIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.HEALTH_FIX, issueIds),
+  getHealthReport: (): Promise<HealthReport> => ipcRenderer.invoke(IPC_CHANNELS.HEALTH_GET_REPORT),
 
   // Smart Clean
   scanSmartClean: (categories: string[]): Promise<SmartCleanScanResult> =>
