@@ -248,21 +248,37 @@ silently assumed.
 | OQ-3 | DuplicateFinder's hashing strategy and scan root | Approved round 3 (Q16). Two-stage size-then-hash, SHA-256, 1 MB minimum, reparse points and hardlinks skipped, user-chosen root. |
 | OQ-4 | The framework's exact plan/execute types | Confirmed round 3 (Q17). Plan → Confirm → Execute → Verify → Record. |
 
-### 8.2 Yours to decide
+### 8.2 Decisions — approved for v1
 
-Proposed defaults are stated so work can continue; say the word and any of them changes.
+All seven were put to the owner with a proposed default each. **The owner approved
+all seven** on 2026-10-16, so the proposed defaults are now the v1 decisions.
 
-| # | Question | Proposed default |
+| # | Question | Decision |
 |---|---|---|
-| OQ-9 | Default `N` for DiskAnalyzer's "largest files" list | 50 — long enough to be useful, short enough to scan quickly |
-| OQ-10 | Is DiskAnalyzer's extension→category mapping user-customizable, or fixed in code? | Fixed in code for v1; the mapping is small and rarely changes |
-| OQ-11 | DiskAnalyzer: follow a junction that resolves *inside* the root, or skip all reparse points? | Skip all reparse points — double-counting is the worse error |
-| OQ-12 | Drive totals from the Phase 1 CIM query, or from `fs.statfs`? | CIM (already implemented), degrading to `null` and "not measured" if unavailable |
-| OQ-DF-3 | Recycle Bin capacity threshold that triggers a warning | 80% of the bin's configured quota |
-| OQ-6 | Is `SystemComponent = 1` a complete test for excluding system components from RegistryFixer? | Treat it as necessary but not sufficient — also require that the entry has no `UninstallString` |
-| — | Do we buy a code-signing certificate, and if so OV or EV? | Skip signing for v1; the installer warns on SmartScreen but installs. Revisit before any public distribution. |
+| OQ-9 | Default `N` for DiskAnalyzer's "largest files" list | **50** |
+| OQ-10 | Is DiskAnalyzer's extension→category mapping user-customizable, or fixed in code? | **Fixed in code** for v1 |
+| OQ-11 | DiskAnalyzer: follow a junction that resolves *inside* the root, or skip all reparse points? | **Skip all reparse points** — double-counting is the worse error |
+| OQ-12 | Drive totals from the Phase 1 CIM query, or from `fs.statfs`? | **CIM** (already implemented), degrading to `null` and "not measured" if unavailable |
+| OQ-DF-3 | Recycle Bin capacity threshold that triggers a warning | **80%** of the bin's configured quota |
+| OQ-6 | Is `SystemComponent = 1` a complete test for excluding system components from RegistryFixer? | **No** — necessary but not sufficient; also require that the entry has no `UninstallString` |
+| — | Do we buy a code-signing certificate, and if so OV or EV? | **Skip signing for v1**; the installer warns on SmartScreen but installs. Revisit before any public distribution. |
 
-### 8.3 Answerable on your Windows machine
+### 8.3 Revisit at v2 — standing note
+
+The owner has asked for a standing note: **these are v1 decisions and are expected to
+be revisited for v2.** The ones most likely to change:
+
+- **Code signing** — the certificate decision (OV vs EV) is *deferred, not resolved*.
+  Revisit before any public distribution. Most likely v2 change.
+- **Customizability** — the fixed extension→category mapping (OQ-10) is the most likely
+  candidate to become user-configurable in v2, once the settings UI's shape is known.
+- **Drive totals** — the CIM-first choice (OQ-12) can be revisited if the Storage
+  Management provider proves unreliable across real machines.
+
+Everything else in v1 is settled. This note is the pointer: when v2 planning starts,
+come back here first.
+
+### 8.4 Answerable on your Windows machine
 
 These block nothing. Each is resolved by observation on the target machine during that phase's
 acceptance test, and recorded in that phase's Verification section.
