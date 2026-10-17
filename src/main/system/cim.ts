@@ -182,14 +182,14 @@ export interface Win32_PerfFormattedData_PerfDisk_LogicalDisk {
 
 const CLASS_NAME_REGEX = /^[A-Za-z0-9_]+$/;
 const PROPERTY_REGEX = /^[A-Za-z0-9_]+$/;
-// Conservative allowlist for CIM filters: letters, digits, space, =, ', ", _, -, ., *, (, ), ,
+// Conservative allowlist for CIM filters: letters, digits, space, =, ', ", _, -, ., *, (, ), ,, :
 // NOTE: The backtick (`) MUST NEVER be allowed here because it is PowerShell's escape character.
 // Allowing backticks creates an injection hole: buildCimCommand escapes double quotes with `",
 // so a filter containing `` `" `` becomes `` `` `" `` where PowerShell interprets `` as a literal
 // backtick and treats the quote as closing the string, breaking out of the quoted argument.
 // In addition, pipe (|) and percent (%) are excluded to prevent pipeline chaining and
 // ForEach-Object alias execution in WQL filter contexts.
-const FILTER_REGEX = /^[A-Za-z0-9 ='"_\-.*(),]+$/;
+const FILTER_REGEX = /^[A-Za-z0-9 ='"_\-.*(),:]+$/;
 
 const isValidNamespace = (ns: string): boolean => {
   if (!ns || ns.trim().length === 0) return false;
