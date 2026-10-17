@@ -85,6 +85,55 @@ navigate. The UI must not claim speed. Specifically:
 
 ### Enumeration
 
+#### The three-outcome filesystem check
+
+Every existence check in this module returns one of **three** outcomes, not a
+boolean:
+
+| Outcome | Meaning | Flagged? |
+|---|---|---|
+| `exists` | The path was resolved and the target is there | No |
+| `gone` | The path was resolved and the target is provably absent (`ENOENT`) | **Yes — the only flag** |
+| `indeterminate` | The check could not complete — permission denied (`EACCES`/`EPERM`), I/O error (`EIO`), device unavailable, network timeout, or any other non-`ENOENT` failure | No |
+
+`fs.existsSync` is **not** usable for this. It collapses "provably absent" and
+"could not be checked" into the same `false`, which would flag a locked-down
+directory as dead weight. The check must be written against the error code:
+`ENOENT` means gone; anything else means indeterminate.
+
+Rails:
+
+- **`indeterminate` is never a flag.** It is the absence of proof, and the
+  binding rule requires proof. An entry that cannot be checked is not listed.
+- **Indeterminate entries are counted, not hidden.** The scan result carries an
+  `indeterminateCount` so the user knows the scan was incomplete. Reporting
+  "0 issues" when N entries could not be checked is a lie of omission.
+- **The same rule applies to both in-scope categories.** Uninstall locations and
+  MUICache file paths go through the identical check.
+
+#### Network and UNC paths
+
+Paths that live on a network — UNC paths (`\\server\share\...`) and mapped
+network drives — are **skipped entirely**. They are neither flagged nor counted
+as indeterminate.
+
+Rationale: a network share that is temporarily unreachable is indistinguishable
+from one that no longer exists, and a laptop that is simply off the corporate
+network would produce a wall of false positives. **Reachability is not
+provability.** Since the target cannot be proven gone, the entry is not listed.
+
+This is a deliberate limitation, and the UI states it: network-backed entries are
+not scanned. Skipped entries are counted in `skippedNetworkCount` so the omission
+is visible rather than silent.
+
+Detection of a network path:
+
+- UNC: the path begins with `\\` (or `//`).
+- Mapped drive: the drive letter has a `DRIVE_REMOTE` type. Resolve via
+  `GetDriveType`-equivalent (a single CIM/`Win32_LogicalDisk` lookup per distinct
+  drive letter, cached for the scan) — **not** by assuming every non-`C:` letter
+  is remote, since a machine may have several local volumes.
+
 #### Orphaned uninstall entries
 
 The three standard Windows Uninstall keys:
@@ -122,13 +171,20 @@ For each UninstallKey in [HKLM, HKLM\WOW6432Node, HKCU]:
     If InstallLocation is absent or empty:
       Skip  # nothing to prove missing
 
-    # Detection
+    # Exclusion 4: network paths
+    If InstallLocation is a UNC path or a mapped network drive:
+      Skip, increment skippedNetworkCount  # reachability is not provability
+
+    # Detection — three outcomes, only one is a flag
     If InstallLocation is present and non-empty:
-      If directory does NOT exist on disk:
+      outcome = checkPathOutcome(InstallLocation)
+      If outcome is "gone":
         Flag as orphaned_uninstall
-        Evidence: { checkedPath: InstallLocation, exists: false }
+        Evidence: { checkedPath: InstallLocation, outcome: "gone" }
+      If outcome is "indeterminate":
+        Skip, increment indeterminateCount  # absence of proof is not proof of absence
       Else:
-        Skip
+        Skip  # "exists"
 ```
 
 Rails:
@@ -140,9 +196,13 @@ Rails:
   a file path.
 - **A `rundll32.exe` reference is not a flag.** Same rationale: the target is a
   DLL function, not a file path that can be checked for existence.
-- **The filesystem check is the only proof.** An entry is flagged when and only
-  when `InstallLocation` is present, non-empty, and the directory does not exist
-  on disk at scan time. No other signal is sufficient.
+- **A network path is not a flag.** Reachability is not provability — see
+  "Network and UNC paths" above.
+- **`indeterminate` is not a flag.** An entry that could not be checked is not
+  listed. Absence of proof is not proof of absence.
+- **Only a proven absence is a flag.** An entry is flagged when and only when
+  `InstallLocation` is present, non-empty, non-network, checkable, and the check
+  returns `gone`. No other signal is sufficient.
 
 #### Stale MUICache entries
 
@@ -162,18 +222,30 @@ Detection algorithm:
 For each Value in MuiCache:
   # Value name format: <filepath>.<suffix>
   Extract file path from value name (strip known suffixes)
-  If file does NOT exist on disk:
+
+  # Network paths are skipped
+  If filepath is a UNC path or a mapped network drive:
+    Skip, increment skippedNetworkCount
+
+  # Three outcomes, only one is a flag
+  outcome = checkPathOutcome(filepath)
+  If outcome is "gone":
     Flag as stale_mui_cache
-    Evidence: { checkedPath: filepath, exists: false }
+    Evidence: { checkedPath: filepath, outcome: "gone" }
+  If outcome is "indeterminate":
+    Skip, increment indeterminateCount
   Else:
-    Skip
+    Skip  # "exists"
 ```
 
 Rails:
 
 - **A MUICache entry is stale only when the referenced file is provably gone.**
-  The file path is extracted from the value name; if that file does not exist,
-  the cached display string is dead weight.
+  The file path is extracted from the value name; if that file is provably
+  absent, the cached display string is dead weight. `indeterminate` does not
+  qualify — see the three-outcome check above.
+- **Network paths are skipped here too.** A file on an unreachable share cannot
+  be proven gone, so it is not listed.
 - **Multiple suffixes may reference the same file.** If `setup.exe.ApplicationCompany`
   and `setup.exe.ApplicationName` both exist and `setup.exe` is gone, both entries
   are flagged. The UI may group them under the same file path.
@@ -195,8 +267,17 @@ export interface RegistryFixerIssue {
   selected: boolean;
   evidence: {
     checkedPath: string;      // the filesystem path that was checked
-    exists: boolean;          // false = provably gone
+    outcome: 'gone';          // only "gone" is ever flagged — see the three-outcome check
   };
+}
+
+export type PathCheckOutcome = 'exists' | 'gone' | 'indeterminate';
+
+export interface RegistryScanResult {
+  issues: RegistryFixerIssue[];
+  scannedAt: string;
+  indeterminateCount: number;    // entries that could NOT be checked (EACCES, EIO, ...)
+  skippedNetworkCount: number;   // entries skipped because their path is on a network
 }
 ```
 
@@ -209,6 +290,9 @@ export interface RegistryFixerIssue {
 - It does not flag file associations (held — see scope above).
 - It does not flag `SharedDLLs`, `App Paths`, `CLSID`, `TypeLib`, or any other
   registry location outside the two in-scope categories.
+- It does not flag entries whose target could not be checked (`indeterminate`).
+  It counts them, so the incompleteness is visible.
+- It does not scan entries whose path is on a network. It counts them.
 
 ---
 
@@ -325,7 +409,7 @@ Rails:
 |---|---|
 | `RegistryIssue` type | Replaced by `RegistryFixerIssue` — only `orphaned_uninstall` and `stale_mui_cache` types |
 | `RegistryIssueType` | Replaced by `RegistryFixerIssueType` — the nine old types (`missing_dll`, `unused_extension`, etc.) are all out of scope |
-| `REGISTRY_SCAN` return type | `RegistryFixerIssue[]` instead of `RegistryIssue[]` |
+| `REGISTRY_SCAN` return type | `RegistryScanResult` — `issues`, `scannedAt`, `indeterminateCount`, `skippedNetworkCount` — instead of a bare `RegistryIssue[]` |
 | `REGISTRY_FIX` return type | `RegistryFixerResult` with `fixedCount`, `failedCount`, `backupPath`, `message` |
 | `REGISTRY_FIX` behavior | No longer returns `{ success: false }` — performs the real fix via the Phase 3 framework |
 | `createBackup` parameter | Removed from the UI contract — backup is always written, not optional |
@@ -380,9 +464,17 @@ Pure logic, runs on the build machine, required before the phase is done:
 - Suffix stripping: `.ApplicationCompany` and `.ApplicationName` are stripped
   correctly from value names.
 - Evidence field: every flagged issue carries the correct `checkedPath` and
-  `exists: false`.
+  `outcome: 'gone'`.
 - No heuristic flags: no entry is flagged based on age, publisher, or any signal
   other than the filesystem existence check.
+- Three-outcome check: a path that resolves to `ENOENT` returns `gone`; a path
+  that raises `EACCES`/`EPERM`/`EIO` returns `indeterminate`; an existing path
+  returns `exists`. Only `gone` produces a flag.
+- Network paths: a UNC path (`\\server\share\...`) and a path on a mapped
+  network drive are skipped, counted in `skippedNetworkCount`, and never flagged.
+- Indeterminate entries: counted in `indeterminateCount` and absent from
+  `issues`. A scan where every check is indeterminate returns 0 issues and a
+  non-zero count — never a bare "0 issues".
 
 Windows acceptance, run by the owner:
 
@@ -401,7 +493,8 @@ Windows acceptance, run by the owner:
 
 | Risk | Mitigation |
 |---|---|
-| A valid entry is flagged because its `InstallLocation` is a network path or UNC path that is temporarily unavailable | The scan checks filesystem existence at scan time. A network path that is unreachable will read as "does not exist" and the entry will be flagged. This is a known limitation — the owner should review flagged entries before fixing. Record this as an open question. |
+| A valid entry is flagged because its `InstallLocation` is a network path or UNC path that is temporarily unavailable | **Resolved.** Network paths (UNC and mapped drives) are skipped entirely — neither flagged nor counted as indeterminate. Reachability is not provability. The skipped count is surfaced so the omission is visible. |
+| A valid entry is flagged because its target exists but cannot be read (permission denied, I/O error) | **Resolved.** The check distinguishes `ENOENT` (gone) from every other failure (indeterminate). Only `gone` is flagged; indeterminate entries are counted, never listed. |
 | `SystemComponent` identification is wrong | UNVERIFIED. The safest approach is to skip entries with `SystemComponent = 1`, but this value's exact semantics need Windows confirmation. Until verified, also skip entries whose publisher is Microsoft Corporation. |
 | MUICache suffix set is incomplete | UNVERIFIED. The known suffixes (`.ApplicationCompany`, `.ApplicationName`) are from the existing mock data. The full set needs Windows enumeration. Until verified, only strip known suffixes. |
 | The `.reg` backup is written but not restorable | A `.reg` file is a backup, not a restore. The backup must be validated (header check, parseable) before the delete proceeds. The restore path reuses the Phase 2 infrastructure. |
@@ -418,4 +511,4 @@ Windows acceptance, run by the owner:
 | OQ-1 (from roadmap) | Does Windows 10+ reject a rewritten `UserChoice` hash, as Chromium does with `Secure Preferences`? | The file-association category — held until resolved |
 | OQ-6 | What is the exact identification mechanism for "system components" in Uninstall keys? Is `SystemComponent = 1` the correct and complete test? | The system-component exclusion |
 | OQ-7 | What is the complete set of MUICache value name suffixes? | The stale MUICache detection |
-| OQ-8 | Should `InstallLocation` paths that are network shares (UNC paths) be checked differently? A temporarily unreachable share would read as "does not exist" and produce a false positive. | The orphaned uninstall detection |
+| OQ-8 | ~~Should `InstallLocation` paths that are network shares (UNC paths) be checked differently?~~ **Resolved (v1 decision):** network paths (UNC and mapped drives) are skipped entirely and counted; the check distinguishes `ENOENT` from every other failure so permission errors are never mistaken for absence. | Nothing — resolved |
