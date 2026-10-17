@@ -7,7 +7,7 @@ import {
   SmartCleanReport,
   SmartCleanScanResult,
   SmartCleanResult,
-  RegistryIssue,
+  RegistryScanResult,
   RegistryBackup,
   StartupItem,
   StartupDelayState,
@@ -46,7 +46,7 @@ const api: DeskKleanAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.SMART_CLEAN_EXECUTE, categoryIds),
 
   // Registry
-  scanRegistry: (): Promise<RegistryIssue[]> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_SCAN),
+  scanRegistry: (): Promise<RegistryScanResult> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_SCAN),
   fixRegistryIssues: (issueIds: string[], createBackup: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_FIX, issueIds, createBackup),
   getRegistryBackups: (): Promise<RegistryBackup[]> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_GET_BACKUPS),

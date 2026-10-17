@@ -223,6 +223,76 @@ export async function listSubKeys(
   }
 }
 
+export interface SubKeyRecord {
+  subKey: string;
+  values: Record<string, unknown>;
+}
+
+/**
+ * Reads all subkeys under a given registry key along with their properties in a single PowerShell invocation.
+ *
+ * @param hive - Registry hive ('HKCU' or 'HKLM').
+ * @param keyPath - Path to the parent key.
+ * @returns Array of SubKeyRecord objects containing subKey name and values.
+ */
+export async function readSubKeysWithValues(
+  hive: RegistryHive,
+  keyPath: string
+): Promise<SubKeyRecord[]> {
+  if (!isWindows()) {
+    return [];
+  }
+
+  const psPath = toPsDrivePath(hive, keyPath);
+  const escapedPath = escapePsSingleQuote(psPath);
+
+  const script = `
+    $p = '${escapedPath}';
+    if (Test-Path -LiteralPath $p) {
+      $items = @(Get-ChildItem -LiteralPath $p -ErrorAction SilentlyContinue | ForEach-Object {
+        $props = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue |
+          Select-Object -Property * -ExcludeProperty PS*;
+        if ($null -ne $props) {
+          [PSCustomObject]@{
+            subKey = $_.PSChildName;
+            values = $props;
+          }
+        }
+      });
+      if ($items.Count -gt 0) {
+        $items | ConvertTo-Json -Depth 3 -Compress
+      } else {
+        '[]'
+      }
+    } else {
+      '[]'
+    }
+  `.trim();
+
+  try {
+    const raw = await runPowerShell(script);
+    const parsed = parseJsonSafe<unknown>(raw, [], 'registry:readSubKeysWithValues');
+    if (Array.isArray(parsed)) {
+      return parsed.map((item: any) => ({
+        subKey: String(item?.subKey || ''),
+        values: item?.values && typeof item.values === 'object' && !Array.isArray(item.values) ? item.values : {},
+      }));
+    } else if (parsed && typeof parsed === 'object') {
+      const item = parsed as any;
+      return [
+        {
+          subKey: String(item?.subKey || ''),
+          values: item?.values && typeof item.values === 'object' && !Array.isArray(item.values) ? item.values : {},
+        },
+      ];
+    }
+    return [];
+  } catch (err) {
+    console.warn(`Failed to read subkeys with values for ${psPath}:`, err);
+    return [];
+  }
+}
+
 /**
  * Decodes the Windows StartupApproved 12-byte REG_BINARY value.
  *

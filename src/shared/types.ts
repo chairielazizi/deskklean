@@ -205,28 +205,39 @@ export interface SmartCleanResult {
 }
 
 // Registry Fixer
-export type RegistrySeverity = 'low' | 'medium' | 'high';
-export type RegistryIssueType =
-  | 'missing_dll'
-  | 'unused_extension'
-  | 'broken_shortcut'
-  | 'orphaned_key'
-  | 'activex_com'
-  | 'type_library'
-  | 'app_path'
-  | 'installer_cache'
-  | 'mui_cache';
+export type RegistryFixerIssueType = 'orphaned_uninstall' | 'stale_mui_cache';
 
-export interface RegistryIssue {
+export interface RegistryFixerIssue {
   id: string;
-  type: RegistryIssueType;
-  categoryName: string;
-  keyPath: string;
-  valueName?: string;
-  data?: string;
-  description: string;
-  severity: RegistrySeverity;
+  type: RegistryFixerIssueType;
+  hive: 'HKCU' | 'HKLM';
+  keyPath: string;            // registry key path (without hive prefix)
+  valueName?: string;         // for MUICache: the value name; for uninstall: undefined (whole key)
+  displayName: string;        // human-readable name
+  description: string;        // why it was flagged (the proof)
+  severity: 'low';            // both categories are low-risk housekeeping
   selected: boolean;
+  evidence: {
+    checkedPath: string;      // the filesystem path that was checked
+    outcome: 'gone';          // only "gone" is ever flagged — see the three-outcome check
+  };
+}
+
+export type PathCheckOutcome = 'exists' | 'gone' | 'indeterminate';
+
+export interface RegistryScanResult {
+  issues: RegistryFixerIssue[];
+  scannedAt: string;
+  indeterminateCount: number;    // entries that could NOT be checked (EACCES, EIO, ...)
+  skippedNetworkCount: number;   // entries skipped because their path is on a network
+}
+
+export interface RegistryFixerResult {
+  success: boolean;
+  fixedCount: number;
+  failedCount?: number;
+  backupPath?: string;
+  message?: string;
 }
 
 export interface RegistryBackup {
@@ -519,7 +530,7 @@ export interface DeskKleanAPI {
   executeSmartClean: (categoryIds?: string[]) => Promise<ExecuteResult>;
 
   // Registry
-  scanRegistry: () => Promise<RegistryIssue[]>;
+  scanRegistry: () => Promise<RegistryScanResult>;
   fixRegistryIssues: (
     issueIds: string[],
     createBackup: boolean

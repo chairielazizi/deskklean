@@ -17,7 +17,8 @@ import {
   SmartCleanScanResult,
   SmartCleanResult,
   ExecuteResult,
-  RegistryIssue,
+  RegistryScanResult,
+  RegistryFixerIssue,
   RegistryBackup,
   StartupItem,
   InstalledApp,
@@ -49,6 +50,7 @@ import {
 } from './system/framework';
 import { scanSmartClean } from './system/smartclean/scan';
 import { createSmartCleanPlan } from './system/smartclean/execute';
+import { scanRegistryFixer } from './system/registry-fixer';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -756,85 +758,8 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // --- Registry Fixer ---
-  const sampleRegistryIssues: RegistryIssue[] = [
-    {
-      id: 'reg-1',
-      type: 'missing_dll',
-      categoryName: 'Missing Shared DLLs',
-      keyPath: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\SharedDLLs',
-      valueName: 'C:\\Program Files (x86)\\Common Files\\Adobe\\AdobeGCClient\\agcsvc.dll',
-      data: '0x00000001 (1)',
-      description: 'The shared DLL file referenced by this entry does not exist on disk',
-      severity: 'medium',
-      selected: true,
-    },
-    {
-      id: 'reg-2',
-      type: 'unused_extension',
-      categoryName: 'Unused File Extensions',
-      keyPath: 'HKCR\\.torrent_old',
-      valueName: '(Default)',
-      data: 'uTorrent.old.file',
-      description: 'File extension points to an uninstalled software handler',
-      severity: 'low',
-      selected: true,
-    },
-    {
-      id: 'reg-3',
-      type: 'broken_shortcut',
-      categoryName: 'Broken Start Menu Shortcuts',
-      keyPath: 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs',
-      valueName: 'DeskSetup.exe.lnk',
-      description: 'Shortcut points to a destination that has been moved or deleted',
-      severity: 'low',
-      selected: true,
-    },
-    {
-      id: 'reg-4',
-      type: 'orphaned_key',
-      categoryName: 'Obsolete Software Keys',
-      keyPath: 'HKCU\\Software\\WinRAR_Trial_Expired',
-      valueName: '',
-      description: 'Stale configuration left behind after program removal',
-      severity: 'high',
-      selected: true,
-    },
-    {
-      id: 'reg-5',
-      type: 'activex_com',
-      categoryName: 'ActiveX and Class Issues',
-      keyPath: 'HKCR\\CLSID\\{A8872B5E-37ea-4f01-B2C6-7A51261BCA88}',
-      valueName: 'InprocServer32',
-      data: 'C:\\Windows\\System32\\unregistered_plugin.dll',
-      description: 'COM server DLL is missing or unregistered',
-      severity: 'high',
-      selected: true,
-    },
-    {
-      id: 'reg-6',
-      type: 'app_path',
-      categoryName: 'Application Paths',
-      keyPath: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\oldtool.exe',
-      valueName: '(Default)',
-      data: 'C:\\Program Files\\OldTool\\oldtool.exe',
-      description: 'Registered application executable cannot be found',
-      severity: 'medium',
-      selected: true,
-    },
-    {
-      id: 'reg-7',
-      type: 'mui_cache',
-      categoryName: 'MUI Cache',
-      keyPath: 'HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache',
-      valueName: 'C:\\Users\\User\\Downloads\\setup_temp.exe.ApplicationCompany',
-      description: 'Cached string for executable that no longer exists',
-      severity: 'low',
-      selected: true,
-    },
-  ];
-
-  ipcMain.handle(IPC_CHANNELS.REGISTRY_SCAN, async (): Promise<RegistryIssue[]> => {
-    return sampleRegistryIssues;
+  ipcMain.handle(IPC_CHANNELS.REGISTRY_SCAN, async (): Promise<RegistryScanResult> => {
+    return scanRegistryFixer();
   });
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_FIX, async (_, issueIds: string[], createBackup: boolean) => {
