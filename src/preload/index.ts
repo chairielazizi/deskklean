@@ -23,6 +23,8 @@ import {
   ShredMethodId,
   AppSettings,
   ActivityItem,
+  DiskAnalysisResult,
+  ScanProgressEvent,
 } from '../shared/types';
 
 const api: DeskKleanAPI = {
@@ -88,7 +90,16 @@ const api: DeskKleanAPI = {
   removeExtension: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_REMOVE, id),
 
   // Disk Analyzer
-  analyzeDisk: (drivePath: string) => ipcRenderer.invoke(IPC_CHANNELS.DISK_ANALYZE, drivePath),
+  analyzeDisk: (drivePath: string): Promise<DiskAnalysisResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DISK_ANALYZE, drivePath),
+  cancelDiskAnalysis: () => ipcRenderer.invoke(IPC_CHANNELS.DISK_CANCEL),
+  onDiskScanProgress: (callback: (progress: ScanProgressEvent) => void) => {
+    const listener = (_: unknown, progress: ScanProgressEvent) => callback(progress);
+    ipcRenderer.on(IPC_CHANNELS.DISK_SCAN_PROGRESS, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.DISK_SCAN_PROGRESS, listener);
+    };
+  },
 
   // Duplicate Finder
   scanDuplicates: (config: DuplicateScanConfig): Promise<DuplicateGroup[]> =>

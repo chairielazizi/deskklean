@@ -23,6 +23,7 @@ import {
   ShredMethodId,
   AppSettings,
   ActivityItem,
+  DiskAnalysisResult,
 } from '../shared/types';
 import { DEFAULT_CLEAN_CATEGORIES, DEFAULT_SETTINGS, SHRED_METHODS } from '../shared/constants';
 
@@ -633,17 +634,24 @@ const mockAPI: DeskKleanAPI = {
   toggleExtension: async () => ({ success: true }),
   removeExtension: async () => ({ success: true }),
 
-  analyzeDisk: async (drivePath: string) => ({
-    totalBytes: 512 * 1024 * 1024 * 1024,
-    freeBytes: 184 * 1024 * 1024 * 1024,
+  analyzeDisk: async (drivePath: string): Promise<DiskAnalysisResult> => ({
+    rootPath: drivePath || 'C:\\',
+    driveTotalBytes: 512 * 1024 * 1024 * 1024,
+    driveFreeBytes: 184 * 1024 * 1024 * 1024,
+    scannedBytes: 328000000000,
+    fileCount: 524000,
+    directoryCount: 1420,
+    scanDurationMs: 420,
+    complete: true,
+    skippedPaths: [],
     breakdown: [
-      { type: 'video', label: 'Videos & Movies', totalBytes: 94000000000, percentage: 28.6, color: '#f59e0b', count: 142 },
-      { type: 'archive', label: 'Games & Installers', totalBytes: 88000000000, percentage: 26.8, color: '#ec4899', count: 85 },
+      { type: 'video', label: 'Videos & Movies', totalBytes: 94000000000, percentage: 28.7, color: '#f59e0b', count: 142 },
+      { type: 'archive', label: 'Archives & Packages', totalBytes: 88000000000, percentage: 26.8, color: '#ec4899', count: 85 },
       { type: 'system', label: 'Windows & System Files', totalBytes: 65000000000, percentage: 19.8, color: '#3b82f6', count: 184000 },
-      { type: 'document', label: 'Apps & Node Modules', totalBytes: 42000000000, percentage: 12.8, color: '#10b981', count: 324000 },
+      { type: 'document', label: 'Documents & Text', totalBytes: 42000000000, percentage: 12.8, color: '#10b981', count: 324000 },
       { type: 'image', label: 'Photos & Graphics', totalBytes: 24000000000, percentage: 7.3, color: '#8b5cf6', count: 12400 },
       { type: 'audio', label: 'Audio & Music', totalBytes: 9000000000, percentage: 2.7, color: '#06b6d4', count: 1800 },
-      { type: 'other', label: 'Other / Unknown', totalBytes: 6000000000, percentage: 2.0, color: '#64748b', count: 4500 },
+      { type: 'other', label: 'Other / Unknown', totalBytes: 6000000000, percentage: 1.8, color: '#64748b', count: 4500 },
     ],
     folderTree: {
       name: drivePath || 'C:\\',
@@ -698,6 +706,10 @@ const mockAPI: DeskKleanAPI = {
       { id: 'lf-5', name: 'node_modules_backup.tar.gz', path: 'C:\\Users\\User\\Documents\\node_modules_backup.tar.gz', sizeBytes: 1845493760, extension: 'gz', lastModified: '2024-03-11' },
     ],
   }),
+
+  cancelDiskAnalysis: async () => ({ success: true }),
+  onDiskScanProgress: () => () => {},
+
 
   scanDuplicates: async (): Promise<DuplicateGroup[]> => [
     {

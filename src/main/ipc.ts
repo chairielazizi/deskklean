@@ -30,6 +30,7 @@ import {
   ShredMethodId,
   AppSettings,
   ActivityItem,
+  DiskAnalysisResult,
 } from '../shared/types';
 import { isWindows } from './system/powershell';
 import {
@@ -70,7 +71,9 @@ import {
   getNetworkAdapterDevices,
   getNetworkPerformance,
   getDiskPerformance,
+  getLogicalDisks,
 } from './system/cim';
+import { walk } from './system/disk-analyzer';
 import { getDiskMeasurements, getGpuVram64BitMb } from './system/systemInfo';
 import {
   toNumber,
@@ -1148,73 +1151,62 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- Disk Space Analyzer ---
-  ipcMain.handle(IPC_CHANNELS.DISK_ANALYZE, async (_, drivePath: string) => {
-    return {
-      totalBytes: 512 * 1024 * 1024 * 1024,
-      freeBytes: 184 * 1024 * 1024 * 1024,
-      breakdown: [
-        { type: 'video', label: 'Videos & Movies', totalBytes: 94000000000, percentage: 28.6, color: '#f59e0b', count: 142 },
-        { type: 'archive', label: 'Games & Installers', totalBytes: 88000000000, percentage: 26.8, color: '#ec4899', count: 85 },
-        { type: 'system', label: 'Windows & System Files', totalBytes: 65000000000, percentage: 19.8, color: '#3b82f6', count: 184000 },
-        { type: 'document', label: 'Apps & Node Modules', totalBytes: 42000000000, percentage: 12.8, color: '#10b981', count: 324000 },
-        { type: 'image', label: 'Photos & Graphics', totalBytes: 24000000000, percentage: 7.3, color: '#8b5cf6', count: 12400 },
-        { type: 'audio', label: 'Audio & Music', totalBytes: 9000000000, percentage: 2.7, color: '#06b6d4', count: 1800 },
-        { type: 'other', label: 'Other / Unknown', totalBytes: 6000000000, percentage: 2.0, color: '#64748b', count: 4500 },
-      ],
-      folderTree: {
-        name: drivePath || 'C:\\',
-        path: drivePath || 'C:\\',
-        sizeBytes: 328000000000,
-        percentage: 100,
-        fileCount: 524000,
-        children: [
-          {
-            name: 'Users',
-            path: 'C:\\Users',
-            sizeBytes: 148000000000,
-            percentage: 45.1,
-            fileCount: 240000,
-            children: [
-              { name: 'Downloads', path: 'C:\\Users\\User\\Downloads', sizeBytes: 52000000000, percentage: 15.8, fileCount: 420 },
-              { name: 'AppData', path: 'C:\\Users\\User\\AppData', sizeBytes: 46000000000, percentage: 14.0, fileCount: 185000 },
-              { name: 'Videos', path: 'C:\\Users\\User\\Videos', sizeBytes: 32000000000, percentage: 9.7, fileCount: 88 },
-              { name: 'Documents', path: 'C:\\Users\\User\\Documents', sizeBytes: 18000000000, percentage: 5.6, fileCount: 54000 },
-            ],
-          },
-          {
-            name: 'Program Files',
-            path: 'C:\\Program Files',
-            sizeBytes: 74000000000,
-            percentage: 22.5,
-            fileCount: 65000,
-            children: [
-              { name: 'Epic Games', path: 'C:\\Program Files\\Epic Games', sizeBytes: 38000000000, percentage: 11.5, fileCount: 12000 },
-              { name: 'Steam', path: 'C:\\Program Files (x86)\\Steam', sizeBytes: 24000000000, percentage: 7.3, fileCount: 22000 },
-              { name: 'Common Files', path: 'C:\\Program Files\\Common Files', sizeBytes: 12000000000, percentage: 3.7, fileCount: 31000 },
-            ],
-          },
-          {
-            name: 'Windows',
-            path: 'C:\\Windows',
-            sizeBytes: 44000000000,
-            percentage: 13.4,
-            fileCount: 165000,
-            children: [
-              { name: 'System32', path: 'C:\\Windows\\System32', sizeBytes: 21000000000, percentage: 6.4, fileCount: 85000 },
-              { name: 'WinSxS', path: 'C:\\Windows\\WinSxS', sizeBytes: 14000000000, percentage: 4.2, fileCount: 72000 },
-            ],
-          },
-        ],
-      },
-      largeFiles: [
-        { id: 'lf-1', name: 'Win11_23H2_English_x64v2.iso', path: 'C:\\Users\\User\\Downloads\\Win11_23H2_English_x64v2.iso', sizeBytes: 6442450944, extension: 'iso', lastModified: '2024-02-10' },
-        { id: 'lf-2', name: 'Cyberpunk2077_backup.zip', path: 'C:\\Users\\User\\Downloads\\Cyberpunk2077_backup.zip', sizeBytes: 5368709120, extension: 'zip', lastModified: '2024-01-22' },
-        { id: 'lf-3', name: 'recording_4k_60fps.mp4', path: 'C:\\Users\\User\\Videos\\Captures\\recording_4k_60fps.mp4', sizeBytes: 4294967296, extension: 'mp4', lastModified: '2024-03-02' },
-        { id: 'lf-4', name: 'MEMORY.DMP', path: 'C:\\Windows\\MEMORY.DMP', sizeBytes: 2147483648, extension: 'dmp', lastModified: '2024-02-28' },
-        { id: 'lf-5', name: 'node_modules_backup.tar.gz', path: 'C:\\Users\\User\\Documents\\node_modules_backup.tar.gz', sizeBytes: 1845493760, extension: 'gz', lastModified: '2024-03-11' },
-      ],
-    };
+  let isDiskScanCancelled = false;
+
+  ipcMain.handle(IPC_CHANNELS.DISK_CANCEL, () => {
+    isDiskScanCancelled = true;
+    return { success: true };
   });
+
+  ipcMain.handle(IPC_CHANNELS.DISK_ANALYZE, async (_, drivePath: string): Promise<DiskAnalysisResult> => {
+    isDiskScanCancelled = false;
+    const targetPath = drivePath || (process.platform === 'win32' ? 'C:\\' : '/');
+
+    // Query drive totals via CIM Win32_LogicalDisk (OQ-12)
+    let driveTotalBytes: number | null = null;
+    let driveFreeBytes: number | null = null;
+
+    if (isWindows()) {
+      try {
+        const driveMatch = targetPath.match(/^([a-zA-Z]):/);
+        const letter = driveMatch ? driveMatch[1].toUpperCase() : 'C';
+        const disks = await getLogicalDisks({ timeoutMs: 5000 }).catch((err) => {
+          console.warn('Failed to query Win32_LogicalDisk for DiskAnalyzer:', err);
+          return [];
+        });
+        const disk = disks.find((d) => d.DeviceID?.toUpperCase().startsWith(letter + ':'));
+        if (disk) {
+          const rawTotal = toNumber(disk.Size);
+          const rawFree = toNumber(disk.FreeSpace);
+          driveTotalBytes = rawTotal !== null && rawTotal > 0 ? rawTotal : null;
+          driveFreeBytes = rawFree !== null && rawFree >= 0 ? rawFree : null;
+        }
+      } catch (err) {
+        console.warn('CIM query error in DiskAnalyzer:', err);
+      }
+    }
+
+    const result = await walk(targetPath, {
+      driveTotalBytes,
+      driveFreeBytes,
+      isCancelled: () => isDiskScanCancelled,
+      onProgress: (progress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send(IPC_CHANNELS.DISK_SCAN_PROGRESS, progress);
+        }
+      },
+    });
+
+    logActivity({
+      module: 'disk-analyzer',
+      title: 'Disk Analyzed',
+      detail: `Scanned ${result.fileCount.toLocaleString()} files across ${result.directoryCount.toLocaleString()} directories in ${targetPath} (${result.complete ? 'complete' : 'partial'})`,
+      type: 'info',
+    });
+
+    return result;
+  });
+
 
   // --- Duplicate File Finder ---
   let duplicateGroups: DuplicateGroup[] = [

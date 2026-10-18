@@ -51,7 +51,12 @@ export interface DiskAnalysisResult {
 
 export interface SkippedPath {
   path: string;
-  reason: 'permission-denied' | 'reparse-point-escape' | 'not-found' | 'stat-error';
+  reason:
+    | 'permission-denied'
+    | 'reparse-point-escape'   // resolved OUTSIDE the scan root
+    | 'reparse-point-skipped'  // resolved INSIDE the root, skipped to avoid double-counting
+    | 'not-found'
+    | 'stat-error';
 }
 ```
 
@@ -196,26 +201,31 @@ walk(rootPath):
     for entry in entries:
       entryPath = path.join(current.path, entry.name)
 
-      # Reparse point detection
+      # Reparse point detection — ALL reparse points are skipped (OQ-11).
+      # The reason string distinguishes the two cases honestly: a point that
+      # resolves outside the root is an escape; one that resolves inside is a
+      # deliberate skip to avoid double-counting. Calling both "escape" would
+      # tell the user something untrue.
       lstat = fs.lstatSync(entryPath)
       if lstat.isSymbolicLink():
         resolved = fs.realpathSync(entryPath)
-        if not resolved.startsWith(rootPath):
-          skippedPaths.add({ path: entryPath, reason: 'reparse-point-escape' })
-          continue
-        # If the resolved path is inside root, treat as a regular file/dir
-        # (but do not follow it — count the link itself, not the target)
-        # Actually: skip symlinks entirely to avoid double-counting
-        skippedPaths.add({ path: entryPath, reason: 'reparse-point-escape' })
+        reason = resolved.startsWith(rootPath)
+          ? 'reparse-point-skipped'
+          : 'reparse-point-escape'
+        skippedPaths.add({ path: entryPath, reason })
         continue
 
       if entry.isDirectory():
-        # Check for junctions: resolve the real path
+        # A directory that is not a symlink may still be a junction.
         resolved = fs.realpathSync(entryPath)
-        if not resolved.startsWith(rootPath):
-          skippedPaths.add({ path: entryPath, reason: 'reparse-point-escape' })
+        if resolved !== entryPath:
+          # It is a reparse point of some kind — skip it (OQ-11).
+          reason = resolved.startsWith(rootPath)
+            ? 'reparse-point-skipped'
+            : 'reparse-point-escape'
+          skippedPaths.add({ path: entryPath, reason })
           continue
-        # Create child node and enqueue
+        # A real directory: create child node and enqueue
         childNode = new DiskFolderNode(entry.name, entryPath)
         current.node.children.push(childNode)
         queue.push({ path: entryPath, node: childNode })
@@ -274,10 +284,12 @@ Rails:
 - **A symlink or junction that resolves outside the root is skipped.** Not
   followed, not counted, not silently included.
 - **A symlink or junction that resolves inside the root is also skipped** to
-  avoid double-counting. The target will be (or has already been) counted at its
-  real location.
-- **Skipped reparse points are reported in `skippedPaths`** with the reason
-  `reparse-point-escape`. The user can see what was skipped and why.
+  avoid double-counting (OQ-11: skip all reparse points). The target will be (or
+  has already been) counted at its real location.
+- **Skipped reparse points are reported in `skippedPaths`, with the reason
+  distinguishing the two cases.** A point that resolves outside the root is
+  `reparse-point-escape`; one that resolves inside is `reparse-point-skipped`.
+  Recording an in-root skip as an "escape" would tell the user something untrue.
 - **`fs.realpathSync` is called on directories only, not on files.** Files cannot
   be reparse points (only directories can be junctions/symlinks on NTFS), so
   `lstatSync` on a file is sufficient.
@@ -448,8 +460,10 @@ Pure logic, runs on the build machine, required before the phase is done:
   `fileCount`, and to the correct category in `breakdown`.
 - Percentage: child percentages sum to approximately 100 (modulo rounding).
 - Top-N: the largest files are correctly identified from a set.
-- Skipped paths: reparse-point-escape, permission-denied, and not-found are
-  recorded with the correct reason.
+- Skipped paths: `reparse-point-escape` (resolved outside the root),
+  `reparse-point-skipped` (resolved inside the root), `permission-denied` and
+  `not-found` are each recorded with the correct reason. An in-root skip must NOT
+  be recorded as an escape.
 - No estimation: a file that cannot be stat'd contributes 0 to the total and
   appears in `skippedPaths`.
 
@@ -480,7 +494,7 @@ Windows acceptance, run by the owner:
 | A file's size changes between `readdirSync` and `statSync` | Use the size from `statSync`. The total is a snapshot. Note this in the result. |
 | The scan takes too long on a large drive | Send progress events every 1000 files. Offer a cancel button that returns partial results. |
 | The walk double-counts files through junctions that stay inside the root | Skip all reparse points, including those that resolve inside the root. The target is counted at its real location. |
-| The `extensionToCategory` mapping is incomplete | An unknown extension goes to `other`. The mapping is customizable by the owner. |
+| The `extensionToCategory` mapping is incomplete | An unknown extension goes to `other`. The mapping is fixed in code for v1 (OQ-10); extending it is a code change. It is the most likely v2 candidate for user configuration. |
 | The result presents `scannedBytes` as the drive's used space | The result includes both `driveTotalBytes` (CIM) and `scannedBytes` (walk). The UI must label them differently. |
 
 ---
@@ -489,7 +503,7 @@ Windows acceptance, run by the owner:
 
 | # | Question | Blocks |
 |---|---|---|
-| OQ-9 | What is the default value of N for `largeFiles` (top N)? 50? 100? | The `largeFiles` list size |
-| OQ-10 | Should the extension-to-category mapping be user-customizable in Settings, or fixed in code? | The `categorize.ts` implementation |
-| OQ-11 | Should the scan follow junctions that resolve *inside* the root (to avoid missing files), or skip all reparse points (to avoid double-counting)? Current spec skips all. | The reparse-point handling |
-| OQ-12 | Should `driveTotalBytes` and `driveFreeBytes` come from CIM (Phase 1) or from `fs.statfs`? CIM is already implemented but may not be available on all Windows editions. | The drive-level metrics |
+| OQ-9 | ~~Default `N` for `largeFiles`?~~ **Resolved (ROADMAP §8.2): 50.** | Nothing — resolved |
+| OQ-10 | ~~Extension→category mapping customizable, or fixed?~~ **Resolved (ROADMAP §8.2): fixed in code for v1.** The most likely v2 candidate for user configuration. | Nothing — resolved |
+| OQ-11 | ~~Follow junctions that resolve inside the root, or skip all reparse points?~~ **Resolved (ROADMAP §8.2): skip all reparse points** — double-counting is the worse error. The skip reason distinguishes an escape from an in-root skip. | Nothing — resolved |
+| OQ-12 | ~~Drive totals from CIM or `fs.statfs`?~~ **Resolved (ROADMAP §8.2): CIM** (already implemented), degrading to `null` and "not measured" if unavailable. | Nothing — resolved |

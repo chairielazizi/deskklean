@@ -58,6 +58,8 @@ export const IPC_CHANNELS = {
 
   // Disk Analyzer
   DISK_ANALYZE: 'disk:analyze',
+  DISK_CANCEL: 'disk:cancel',
+  DISK_SCAN_PROGRESS: 'disk:scan-progress',
 
   // Duplicate Finder
   DUPLICATES_SCAN: 'duplicates:scan',

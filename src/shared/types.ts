@@ -423,6 +423,39 @@ export interface LargeFileInfo {
   lastModified: string;
 }
 
+export interface SkippedPath {
+  path: string;
+  reason:
+    | 'permission-denied'
+    | 'reparse-point-escape'
+    | 'reparse-point-skipped'
+    | 'not-found'
+    | 'stat-error';
+}
+
+export interface DiskAnalysisResult {
+  rootPath: string;
+  driveTotalBytes: number | null;
+  driveFreeBytes: number | null;
+  scannedBytes: number;
+  fileCount: number;
+  directoryCount: number;
+  folderTree: DiskFolderNode;
+  largeFiles: LargeFileInfo[];
+  breakdown: FileTypeBreakdown[];
+  skippedPaths: SkippedPath[];
+  scanDurationMs: number;
+  complete: boolean;
+}
+
+export interface ScanProgressEvent {
+  filesScanned: number;
+  directoriesScanned: number;
+  bytesCounted: number;
+  currentPath: string;
+}
+
+
 // Duplicate File Finder
 export interface DuplicateFile {
   id: string;
@@ -564,13 +597,9 @@ export interface DeskKleanAPI {
   removeExtension: (id: string) => Promise<{ success: boolean }>;
 
   // Disk Analyzer
-  analyzeDisk: (drivePath: string) => Promise<{
-    breakdown: FileTypeBreakdown[];
-    folderTree: DiskFolderNode;
-    largeFiles: LargeFileInfo[];
-    totalBytes: number;
-    freeBytes: number;
-  }>;
+  analyzeDisk: (drivePath: string) => Promise<DiskAnalysisResult>;
+  cancelDiskAnalysis?: () => Promise<{ success: boolean }>;
+  onDiskScanProgress?: (callback: (progress: ScanProgressEvent) => void) => () => void;
 
   // Duplicate Finder
   scanDuplicates: (config: DuplicateScanConfig) => Promise<DuplicateGroup[]>;
