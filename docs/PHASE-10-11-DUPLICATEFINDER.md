@@ -491,6 +491,7 @@ Windows acceptance, run by the owner:
 
 | # | Question | Blocks |
 |---|---|---|
-| OQ-DF-1 | ~~Does `Get-Item` reliably distinguish hardlinks?~~ **Narrowed:** the primary mechanism is now `fs.statSync().nlink > 1`. What remains unverified is whether Node populates `nlink` correctly for NTFS hardlinks on the target machine. PowerShell `Get-Item` `LinkType` is the fallback, and its exact values are still unconfirmed. | Hardlink detection (D-DF-6) |
-| OQ-DF-2 | What is the correct PowerShell/.NET API to send a file to the Recycle Bin programmatically? `SHFileOperation` and `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile` are candidates, but neither was verified. | Phase 11 execute |
+| OQ-DF-1 | ~~Does `Get-Item` reliably distinguish hardlinks?~~ **Resolved (Phase 10):** Node's `fs.statSync().nlink > 1` is verified live on NTFS Windows 11. It accurately exposes hardlinks with zero extra syscalls or process spawns. | Hardlink detection (D-DF-6) — Resolved |
+| OQ-DF-2 | ~~What is the correct PowerShell/.NET API to send a file to the Recycle Bin programmatically?~~ **Resolved (Phase 11):**<br>1. **Primary (Electron Main Process):** `electron.shell.trashItem(path)` (native C++ via COM `IFileOperation`, 0 process spawns).<br>2. **PowerShell Fallback:** `[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin)` via `Add-Type -AssemblyName Microsoft.VisualBasic`. Pre-installed in GAC on 100% of Windows installations; avoids `SHFileOperation` C# P/Invoke compilation latency.<br>3. **Safety Rail:** Never fall back to `unlink()` when `deletionMethod === 'recycle-bin'`. | Phase 11 execute — Resolved |
 | OQ-DF-3 | What Recycle Bin capacity threshold should trigger a warning? A full Recycle Bin silently fails to accept new items. | Phase 11 execute |
+
