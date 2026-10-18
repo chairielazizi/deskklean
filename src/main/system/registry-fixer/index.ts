@@ -5,6 +5,8 @@ import { scanMuiCache, MuiCacheScanOptions } from './scan-mui-cache';
 export * from './path-check';
 export * from './scan-uninstall';
 export * from './scan-mui-cache';
+export * from './backup';
+export * from './fix';
 
 export interface RegistryFixerScanOptions
   extends UninstallScanOptions,

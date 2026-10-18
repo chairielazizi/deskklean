@@ -1,7 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../apiClient';
-import { RegistryFixerIssue, RegistryBackup, RegistryScanResult } from '../../shared/types';
+import {
+  RegistryFixerIssue,
+  RegistryBackup,
+  RegistryScanResult,
+  RegistryFixerResult,
+  OperationPlan,
+} from '../../shared/types';
 import {
   Layers,
   AlertTriangle,
@@ -16,6 +22,10 @@ import {
   FolderX,
   FileQuestion,
   Network,
+  ShieldAlert,
+  ShieldCheck,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 
 export const RegistryFixer: React.FC = () => {
@@ -25,12 +35,14 @@ export const RegistryFixer: React.FC = () => {
   const [backups, setBackups] = useState<RegistryBackup[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [lastScan, setLastScan] = useState<string | null>(null);
-  const [fixResult, setFixResult] = useState<{
-    success: boolean;
-    fixedCount: number;
-    backupPath?: string;
-    message?: string;
-  } | null>(null);
+  const [fixResult, setFixResult] = useState<RegistryFixerResult | null>(null);
+
+  // Phase 8 state: modal, planning, elevation
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [isFixing, setIsFixing] = useState(false);
+  const [plan, setPlan] = useState<OperationPlan | null>(null);
+  const [isElevated, setIsElevated] = useState(false);
 
   const runScan = async () => {
     setIsScanning(true);
@@ -69,6 +81,7 @@ export const RegistryFixer: React.FC = () => {
     try {
       await api.restoreRegistryBackup(backupId);
       await runScan();
+      await loadBackups();
     } catch (e) {
       console.error('Restore failed:', e);
     }
@@ -77,9 +90,79 @@ export const RegistryFixer: React.FC = () => {
   useEffect(() => {
     runScan();
     loadBackups();
+    api.isElevated().then(setIsElevated).catch(() => setIsElevated(false));
   }, []);
 
+  const openConfirm = async () => {
+    const selectedIds = issues.filter((i) => i.selected).map((i) => i.id);
+    if (selectedIds.length === 0) return;
+
+    setIsPlanning(true);
+    try {
+      const elevated = await api.isElevated().catch(() => false);
+      setIsElevated(elevated);
+
+      if (api.planRegistryFix) {
+        const p = await api.planRegistryFix(selectedIds);
+        setPlan(p);
+      } else {
+        const selectedIssues = issues.filter((i) => i.selected);
+        setPlan({
+          id: `plan-local-${Date.now()}`,
+          module: 'registry-fixer',
+          actions: selectedIssues.map((i) => ({
+            id: i.id,
+            kind: i.type === 'orphaned_uninstall' ? 'registry-key' : 'registry-value',
+            target: `${i.hive}\\${i.keyPath}${i.valueName ? `\\${i.valueName}` : ''}`,
+            description: `Delete ${i.displayName}`,
+            reclaimableBytes: null,
+          })),
+          blocked: [],
+          totalReclaimableBytes: null,
+          reversibility: 'reversible',
+          requiresElevation: selectedIssues.some((i) => i.hive === 'HKLM'),
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setShowConfirmModal(true);
+    } catch (e) {
+      console.error('Failed to generate registry fix plan:', e);
+    } finally {
+      setIsPlanning(false);
+    }
+  };
+
+  const handleExecuteFix = async () => {
+    const selectedIds = issues.filter((i) => i.selected).map((i) => i.id);
+    setIsFixing(true);
+    try {
+      const res = await api.fixRegistryIssues(selectedIds);
+      setFixResult(res);
+      setShowConfirmModal(false);
+      await runScan();
+      await loadBackups();
+    } catch (e) {
+      console.error('Failed to fix registry issues:', e);
+      setFixResult({
+        success: false,
+        fixedCount: 0,
+        message: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setIsFixing(false);
+    }
+  };
+
+  const handleRelaunch = async () => {
+    try {
+      await api.relaunchElevated();
+    } catch (e) {
+      console.error('Relaunch elevated failed:', e);
+    }
+  };
+
   const selectedCount = issues.filter((i) => i.selected).length;
+  const elevationBlocked = Boolean(plan?.requiresElevation && !isElevated);
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -109,13 +192,22 @@ export const RegistryFixer: React.FC = () => {
           >
             {issues.length > 0 && issues.every((i) => i.selected) ? 'Deselect All' : 'Select All'}
           </button>
-          {/* Honesty Requirement: Labeled 'Remove dead entries' and kept DISABLED (Phase 8 not built) */}
+          {/* Honesty Requirement: Labeled 'Remove dead entries', enabled when at least 1 entry selected */}
           <button
-            disabled={true}
-            title="Removal is not implemented in Phase 7 (read-only scan). Destructive fix arrives in Phase 8 with mandatory .reg backup."
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-slate-800 text-slate-500 font-bold text-sm border border-slate-700/80 cursor-not-allowed opacity-60"
+            onClick={openConfirm}
+            disabled={selectedCount === 0 || isFixing || isPlanning}
+            title={
+              selectedCount === 0
+                ? 'Select at least one entry to remove.'
+                : 'Remove selected dead entries with automatic .reg backup.'
+            }
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-sm shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
           >
-            <Trash2 className="w-4 h-4" />
+            {isPlanning || isFixing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Trash2 className="w-4 h-4" />
+            )}
             Remove dead entries ({selectedCount})
           </button>
         </div>
@@ -143,17 +235,34 @@ export const RegistryFixer: React.FC = () => {
                 Last scan: {lastScan ? new Date(lastScan).toLocaleTimeString() : 'Never'} &middot; Provable subset only
               </p>
               {fixResult && (
-                <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
-                  <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-                  {fixResult.message}
-                </p>
+                <div
+                  className={`mt-2 p-2.5 rounded-lg border text-xs flex items-start gap-2 ${
+                    fixResult.success
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                  }`}
+                >
+                  {fixResult.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+                  )}
+                  <div>
+                    <span className="font-semibold">{fixResult.message}</span>
+                    {fixResult.backupPath && (
+                      <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                        Backup: {fixResult.backupPath}
+                      </p>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </div>
           <button
             onClick={runScan}
             disabled={isScanning}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-sm border border-slate-700 transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-sm border border-slate-700 transition-all disabled:opacity-50 cursor-pointer"
           >
             {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             {isScanning ? 'Scanning...' : 'Re-Scan'}
@@ -290,12 +399,147 @@ export const RegistryFixer: React.FC = () => {
                 </div>
                 <button
                   onClick={() => handleRestore(backup.id)}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors cursor-pointer"
                 >
                   <RotateCcw className="w-3 h-3" /> Restore
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Step (Phase 8 Rail) */}
+      {showConfirmModal && plan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                  <Trash2 className="w-5 h-5 text-amber-500" />
+                  Confirm Removal of Dead Entries
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Please review the entries to be removed and the safety guarantees before confirming.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-4 text-sm flex-1">
+              {/* Safety & Backup Guarantee */}
+              <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 space-y-1">
+                <div className="flex items-center gap-2 font-bold text-emerald-400">
+                  <ShieldCheck className="w-4 h-4 flex-shrink-0" />
+                  Reversible Operation & Mandatory Backup
+                </div>
+                <p>
+                  This operation is fully reversible. A valid Windows Registry (<code className="font-mono text-emerald-200">.reg</code>) backup
+                  will be created and validated on disk before any entry is touched.
+                </p>
+                <p className="font-mono text-[11px] text-slate-400 pt-1">
+                  Store: %APPDATA%\DeskKlean\backups\registry\
+                </p>
+              </div>
+
+              {/* Elevation Notice if HKLM is targeted */}
+              {elevationBlocked && (
+                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-rose-400">
+                    <ShieldAlert className="w-4 h-4 flex-shrink-0" />
+                    Administrator Rights Required
+                  </div>
+                  <p>
+                    One or more selected entries are located under <code className="font-mono text-rose-200">HKEY_LOCAL_MACHINE</code>.
+                    Windows requires elevated privileges to modify system-wide registry keys.
+                  </p>
+                  <button
+                    onClick={handleRelaunch}
+                    className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-colors cursor-pointer"
+                  >
+                    Relaunch as Administrator
+                  </button>
+                </div>
+              )}
+
+              {/* Blocked Entries if any were refused by safety policy */}
+              {plan.blocked.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 space-y-2">
+                  <div className="flex items-center gap-2 font-bold text-amber-400">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                    Blocked by Safety Policy ({plan.blocked.length})
+                  </div>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {plan.blocked.map((b, i) => (
+                      <div key={i} className="p-2 rounded bg-slate-950/60 border border-slate-800">
+                        <p className="font-mono text-slate-200 break-all">{b.target}</p>
+                        <p className="text-[11px] text-amber-400/90 mt-0.5">{b.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Planned Deletions List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                  <span>Planned Deletions ({plan.actions.length})</span>
+                  <span className="text-slate-500 font-mono">reclaimableBytes: null</span>
+                </div>
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {plan.actions.map((action) => (
+                    <div
+                      key={action.id}
+                      className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 flex items-start justify-between gap-3 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-slate-200 truncate">
+                          {(action.metadata?.displayName as string) || action.id}
+                        </div>
+                        <div className="font-mono text-[11px] text-slate-400 break-all mt-0.5">
+                          {action.target}
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 flex-shrink-0">
+                        {action.kind === 'registry-key' ? 'delete-key' : 'delete-value'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 border-t border-slate-800 flex items-center justify-end gap-3 bg-slate-950/40">
+              <button
+                type="button"
+                onClick={() => setShowConfirmModal(false)}
+                disabled={isFixing}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExecuteFix}
+                disabled={isFixing || elevationBlocked || plan.actions.length === 0}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isFixing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {isFixing
+                  ? 'Removing...'
+                  : elevationBlocked
+                  ? 'Elevation Required'
+                  : `Confirm and Remove (${plan.actions.length})`}
+              </button>
+            </div>
           </div>
         </div>
       )}

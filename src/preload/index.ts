@@ -47,8 +47,10 @@ const api: DeskKleanAPI = {
 
   // Registry
   scanRegistry: (): Promise<RegistryScanResult> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_SCAN),
-  fixRegistryIssues: (issueIds: string[], createBackup: boolean) =>
-    ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_FIX, issueIds, createBackup),
+  fixRegistryIssues: (issueIds?: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_FIX, issueIds),
+  planRegistryFix: (issueIds?: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'registry-fixer', { selectedIssueIds: issueIds }),
   getRegistryBackups: (): Promise<RegistryBackup[]> => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_GET_BACKUPS),
   restoreRegistryBackup: (backupId: string) => ipcRenderer.invoke(IPC_CHANNELS.REGISTRY_RESTORE_BACKUP, backupId),
 

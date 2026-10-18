@@ -7,6 +7,7 @@ import {
   SmartCleanResult,
   RegistryScanResult,
   RegistryFixerIssue,
+  RegistryFixerResult,
   RegistryBackup,
   StartupItem,
   StartupDelayState,
@@ -294,10 +295,28 @@ const mockAPI: DeskKleanAPI = {
     skippedNetworkCount: 0,
   }),
 
-  fixRegistryIssues: async (issueIds: string[], createBackup: boolean) => ({
+  fixRegistryIssues: async (issueIds?: string[]): Promise<RegistryFixerResult> => ({
     success: true,
-    fixedCount: issueIds.length,
-    backupPath: createBackup ? 'C:\\DeskKlean\\Backups\\reg_backup_2026.reg' : undefined,
+    fixedCount: issueIds ? issueIds.length : 2,
+    backupPath: 'C:\\Users\\User\\AppData\\Roaming\\DeskKlean\\backups\\registry\\2026-10-18T07-00-00-000Z-registry-fix.reg',
+    message: `Successfully removed ${issueIds ? issueIds.length : 2} dead registry entries.`,
+  }),
+
+  planRegistryFix: async (issueIds?: string[]): Promise<OperationPlan> => ({
+    id: `plan-reg-${Date.now()}`,
+    module: 'registry-fixer',
+    actions: (issueIds || []).map((id) => ({
+      id,
+      kind: id.startsWith('mui') ? 'registry-value' : 'registry-key',
+      target: `HKCU\\Software\\MockKey\\${id}`,
+      description: `Delete dead entry ${id}`,
+      reclaimableBytes: null,
+    })),
+    blocked: [],
+    totalReclaimableBytes: null,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
   }),
 
   getRegistryBackups: async (): Promise<RegistryBackup[]> => [

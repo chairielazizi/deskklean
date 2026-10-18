@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { runPowerShell, isWindows } from '../powershell';
-import { readValue, buildRegSnippet, decodeStartupApproved } from '../registry';
+import { readValue, buildRegSnippet, decodeStartupApproved, keyExists, RegistryHive, ReadValueResult } from '../registry';
 import { isElevated } from '../elevation';
 import { getOperationPlan, removeOperationPlan } from './plan';
 import {
@@ -11,8 +11,30 @@ import {
   parseRegMetadata,
   getModuleBackupDir,
 } from './backup';
-import { ExecuteResult, PlannedAction } from './types';
+import { ExecuteResult, PlannedAction, ExecuteFailure } from './types';
 import { isFileInUseError } from '../smartclean/scan';
+import {
+  formatRegistryFixerBackup,
+  writeRegistryFixerBackupFile,
+  validateRegBackupFile,
+  readSubKeyValuesWithTypes,
+  slugify,
+  RegistryBackupEntry,
+  BackupValidationResult,
+} from '../registry-fixer/backup';
+
+export interface RegistryExecutionRunners {
+  isWindowsFn?: () => boolean;
+  isElevatedFn?: () => Promise<boolean>;
+  keyExistsFn?: (hive: RegistryHive, keyPath: string) => Promise<boolean>;
+  readValueFn?: (hive: RegistryHive, keyPath: string, valueName: string) => Promise<ReadValueResult>;
+  readSubKeyValuesWithTypesFn?: (hive: RegistryHive, keyPath: string) => Promise<Array<{ name: string; type: string; data: unknown }>>;
+  deleteKeyFn?: (hive: RegistryHive, keyPath: string) => Promise<void>;
+  deleteValueFn?: (hive: RegistryHive, keyPath: string, valueName: string) => Promise<void>;
+  writeBackupFn?: (filePath: string, content: string) => void;
+  validateBackupFn?: (filePath: string) => BackupValidationResult;
+  backupDirOverride?: string;
+}
 
 /**
  * Executes a planned destructive operation (such as restoring a registry backup).
@@ -20,8 +42,8 @@ import { isFileInUseError } from '../smartclean/scan';
  * Enforces Phase 3 contract rails:
  * 1. Checks elevation before touching anything.
  * 2. Backs up current state before the first destructive call; aborts if backup fails.
- * 3. Atomic execution: runs the restore.
- * 4. Verification: re-reads the registry to confirm intended state.
+ * 3. Atomic execution: runs the restore or deletion.
+ * 4. Verification: re-reads the registry or filesystem to confirm intended state.
  * 5. Record: records confirmed result in activity log.
  */
 export async function executeOperationPlan(
@@ -32,7 +54,8 @@ export async function executeOperationPlan(
     detail: string;
     type: 'info' | 'success' | 'warning' | 'error';
     spaceFreedBytes?: number;
-  }) => void
+  }) => void,
+  runners?: RegistryExecutionRunners
 ): Promise<ExecuteResult> {
   const plan = getOperationPlan(planId);
   if (!plan) {
@@ -49,7 +72,7 @@ export async function executeOperationPlan(
 
   // 1. Elevation check before touching anything
   if (plan.requiresElevation) {
-    const elevated = await isElevated();
+    const elevated = runners?.isElevatedFn ? await runners.isElevatedFn() : await isElevated();
     if (!elevated) {
       return {
         success: false,
@@ -68,7 +91,8 @@ export async function executeOperationPlan(
     }
   }
 
-  if (!isWindows()) {
+  const isWin = runners?.isWindowsFn ? runners.isWindowsFn() : isWindows();
+  if (!isWin) {
     return {
       success: false,
       completed: 0,
@@ -87,6 +111,15 @@ export async function executeOperationPlan(
 
   if (restoreAction && restoreAction.metadata?.backupFilePath) {
     return executeRegistryRestore(plan, restoreAction, logActivity);
+  }
+
+  // Handle Registry Deletions (Phase 8 Registry Fixer)
+  const hasRegistryDeletions = plan.actions.some(
+    (a) => a.kind === 'registry-key' || a.kind === 'registry-value'
+  );
+
+  if (hasRegistryDeletions) {
+    return executeRegistryDeletions(plan, logActivity, runners);
   }
 
   // Handle File / Tree Deletion Plan (e.g. SmartClean)
@@ -563,5 +596,279 @@ async function executeRegistryRestore(
     failures: [],
     backupPath: safetyBackupPath || undefined,
     message: `Successfully restored ${itemName} from backup.`,
+  };
+}
+
+async function defaultDeleteKey(hive: RegistryHive, keyPath: string): Promise<void> {
+  const cleanPath = keyPath
+    .replace(/^(HKCU:|HKLM:|HKEY_CURRENT_USER|HKEY_LOCAL_MACHINE)[\\\/]*/i, '')
+    .replace(/^[\\\/]+/, '');
+  const psPath = `${hive}:\\${cleanPath}`;
+  const escaped = psPath.replace(/'/g, "''");
+  await runPowerShell(`Remove-Item -LiteralPath '${escaped}' -Recurse -Force -ErrorAction Stop`);
+}
+
+async function defaultDeleteValue(hive: RegistryHive, keyPath: string, valueName: string): Promise<void> {
+  const cleanPath = keyPath
+    .replace(/^(HKCU:|HKLM:|HKEY_CURRENT_USER|HKEY_LOCAL_MACHINE)[\\\/]*/i, '')
+    .replace(/^[\\\/]+/, '');
+  const psPath = `${hive}:\\${cleanPath}`;
+  const escapedPath = psPath.replace(/'/g, "''");
+  const escapedName = valueName.replace(/'/g, "''");
+  await runPowerShell(
+    `Remove-ItemProperty -LiteralPath '${escapedPath}' -Name '${escapedName}' -Force -ErrorAction Stop`
+  );
+}
+
+/**
+ * Executes a RegistryFixer deletion plan through the framework pipeline:
+ * 1. Checks initial existence of every target to distinguish already-absent entries.
+ * 2. If all entries are already absent: reports no-op honestly without modifying anything.
+ * 3. BACKS UP BEFORE THE FIRST DESTRUCTIVE CALL to %APPDATA%\DeskKlean\backups\registry\<ISO>-<slug>.reg.
+ * 4. VALIDATES THE BACKUP BEFORE DELETING: re-reads and asserts BOM, header, CRLF, and parseable section headers.
+ *    If validation fails: ABORTS immediately with zero deletions.
+ * 5. Executes deletions and VERIFIES EACH by read-back: confirm subkey or value no longer exists.
+ *    A delete that silently did nothing is recorded as verification failure.
+ * 6. Records confirmed outcome in activity log.
+ * 7. Returns partial-failure aware ExecuteResult.
+ */
+export async function executeRegistryDeletions(
+  plan: import('./types').OperationPlan,
+  logActivity?: (item: any) => void,
+  runners: RegistryExecutionRunners = {}
+): Promise<ExecuteResult> {
+  const keyExistsCheck = runners.keyExistsFn ?? keyExists;
+  const readValueCheck = runners.readValueFn ?? readValue;
+  const readSubKeys = runners.readSubKeyValuesWithTypesFn ?? readSubKeyValuesWithTypes;
+  const deleteKeyAction = runners.deleteKeyFn ?? defaultDeleteKey;
+  const deleteValueAction = runners.deleteValueFn ?? defaultDeleteValue;
+  const writeBackup = runners.writeBackupFn ?? writeRegistryFixerBackupFile;
+  const validateBackup = runners.validateBackupFn ?? validateRegBackupFile;
+
+  // 1. Discover which entries exist before touching anything
+  const backupEntries: RegistryBackupEntry[] = [];
+  const initialExistence = new Map<string, boolean>();
+
+  for (const action of plan.actions) {
+    const hive = (action.metadata?.hive as RegistryHive) || 'HKCU';
+    const keyPath = (action.metadata?.keyPath as string) || '';
+    const valueName = action.metadata?.valueName as string | undefined;
+
+    if (action.kind === 'registry-key') {
+      const exists = await keyExistsCheck(hive, keyPath);
+      initialExistence.set(action.id, exists);
+      if (exists) {
+        const values = await readSubKeys(hive, keyPath);
+        backupEntries.push({
+          type: 'orphaned_uninstall',
+          hive,
+          keyPath,
+          values,
+        });
+      }
+    } else if (action.kind === 'registry-value') {
+      const valName = valueName || '';
+      const check = await readValueCheck(hive, keyPath, valName);
+      initialExistence.set(action.id, check.exists);
+      if (check.exists) {
+        backupEntries.push({
+          type: 'stale_mui_cache',
+          hive,
+          keyPath,
+          valueName: valName,
+          valueType: check.type || 'REG_SZ',
+          data: check.data,
+        });
+      }
+    }
+  }
+
+  // Rail: AN ENTRY ALREADY REMOVED BY ANOTHER PROCESS IS A NO-OP, not a success and not a failure.
+  const allAlreadyAbsent = plan.actions.every((a) => initialExistence.get(a.id) === false);
+  if (allAlreadyAbsent) {
+    removeOperationPlan(plan.id);
+    const msg =
+      plan.actions.length === 1
+        ? 'Entry was already absent from the registry.'
+        : 'All selected entries were already absent from the registry.';
+
+    if (logActivity) {
+      logActivity({
+        module: plan.module,
+        title: 'Registry Fix Skipped (Already Absent)',
+        detail: `${msg} No changes were made.`,
+        type: 'info',
+      });
+    }
+
+    return {
+      success: false,
+      completed: 0,
+      failed: 0,
+      skipped: plan.actions.length,
+      reclaimableBytes: null,
+      failures: [],
+      message: msg,
+    };
+  }
+
+  // 2. Create Backup BEFORE the first destructive call
+  const backupDir = runners.backupDirOverride ?? getModuleBackupDir('registry');
+  const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const slug =
+    plan.actions.length === 1
+      ? slugify((plan.actions[0].metadata?.displayName as string) || 'entry')
+      : `registry-fix-${plan.actions.length}-items`;
+  const backupPath = path.join(backupDir, `${isoTimestamp}-${slug}.reg`);
+
+  try {
+    const backupContent = formatRegistryFixerBackup(backupEntries);
+    writeBackup(backupPath, backupContent);
+  } catch (err) {
+    return {
+      success: false,
+      completed: 0,
+      failed: plan.actions.length,
+      skipped: 0,
+      reclaimableBytes: null,
+      failures: [
+        {
+          target: backupPath,
+          error: `Backup creation failed before execution: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+      message: 'Backup creation failed before execution; no registry changes were made.',
+    };
+  }
+
+  // 3. VALIDATE THE BACKUP BEFORE DELETING. If validation fails, ABORT — do not delete.
+  const validation = validateBackup(backupPath);
+  if (!validation.valid) {
+    return {
+      success: false,
+      completed: 0,
+      failed: plan.actions.length,
+      skipped: 0,
+      reclaimableBytes: null,
+      failures: [
+        {
+          target: backupPath,
+          error: `Backup validation failed: ${validation.reason}`,
+        },
+      ],
+      message: `Backup validation failed: ${validation.reason}. Operation aborted; no registry changes were made.`,
+    };
+  }
+
+  // 4. Execute deletions and verify each
+  let completed = 0;
+  let failed = 0;
+  let skipped = 0;
+  const failures: ExecuteFailure[] = [];
+
+  for (const action of plan.actions) {
+    const wasPresent = initialExistence.get(action.id);
+    if (!wasPresent) {
+      skipped++;
+      continue;
+    }
+
+    const hive = (action.metadata?.hive as RegistryHive) || 'HKCU';
+    const keyPath = (action.metadata?.keyPath as string) || '';
+    const valueName = (action.metadata?.valueName as string) || '';
+
+    try {
+      if (action.kind === 'registry-key') {
+        await deleteKeyAction(hive, keyPath);
+      } else if (action.kind === 'registry-value') {
+        await deleteValueAction(hive, keyPath, valueName);
+      }
+    } catch (err) {
+      failures.push({
+        target: action.target,
+        error: `Deletion error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // Rail: A DELETE THAT SILENTLY DID NOTHING MUST NEVER REPORT SUCCESS.
+    // Verify by re-reading the registry: confirm subkey or value no longer exists.
+    try {
+      if (action.kind === 'registry-key') {
+        const stillExists = await keyExistsCheck(hive, keyPath);
+        if (stillExists) {
+          failures.push({
+            target: action.target,
+            error: 'Verification failed: registry key still exists after deletion',
+          });
+          failed++;
+        } else {
+          completed++;
+        }
+      } else if (action.kind === 'registry-value') {
+        const check = await readValueCheck(hive, keyPath, valueName);
+        if (check.exists) {
+          failures.push({
+            target: action.target,
+            error: 'Verification failed: registry value still exists after deletion',
+          });
+          failed++;
+        } else {
+          completed++;
+        }
+      }
+    } catch (err) {
+      failures.push({
+        target: action.target,
+        error: `Verification error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+    }
+  }
+
+  removeOperationPlan(plan.id);
+
+  // 5. Record confirmed outcomes only
+  const success = completed === plan.actions.length && failed === 0;
+
+  if (logActivity) {
+    if (success) {
+      logActivity({
+        module: plan.module,
+        title: 'Registry Cleaned',
+        detail: `Removed ${completed} dead registry ${completed === 1 ? 'entry' : 'entries'}. Backup: ${path.basename(backupPath)}`,
+        type: 'success',
+      });
+    } else if (completed > 0 || failed > 0) {
+      logActivity({
+        module: plan.module,
+        title: 'Registry Cleaned (Partial)',
+        detail: `Removed ${completed} of ${plan.actions.length} entries (${failed} failed, ${skipped} already absent). Backup: ${path.basename(backupPath)}`,
+        type: failed > 0 ? 'warning' : 'info',
+      });
+    }
+  }
+
+  let message: string;
+  if (success) {
+    message = `Successfully removed ${completed} dead registry ${completed === 1 ? 'entry' : 'entries'}.`;
+  } else if (completed > 0) {
+    message = `Removed ${completed} of ${plan.actions.length} entries (${failed} failed, ${skipped} already absent).`;
+  } else if (failed > 0) {
+    message = `Failed to remove ${failed} entries (${skipped} already absent).`;
+  } else {
+    message = 'No entries were modified.';
+  }
+
+  return {
+    success,
+    completed,
+    failed,
+    skipped,
+    reclaimableBytes: null,
+    failures,
+    backupPath,
+    message,
   };
 }

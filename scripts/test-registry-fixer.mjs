@@ -4,6 +4,8 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -11,20 +13,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let pathCheckModule;
 let scanUninstallModule;
 let scanMuiCacheModule;
+let fixModule;
+let backupModule;
 let registryFixerModule;
+let executeModule;
 
 try {
   pathCheckModule = require('../dist/main/system/registry-fixer/path-check.js');
   scanUninstallModule = require('../dist/main/system/registry-fixer/scan-uninstall.js');
   scanMuiCacheModule = require('../dist/main/system/registry-fixer/scan-mui-cache.js');
+  fixModule = require('../dist/main/system/registry-fixer/fix.js');
+  backupModule = require('../dist/main/system/registry-fixer/backup.js');
   registryFixerModule = require('../dist/main/system/registry-fixer/index.js');
+  executeModule = require('../dist/main/system/framework/execute.js');
 } catch {
   const { execSync } = require('child_process');
   execSync('npm run build:main', { cwd: path.resolve(__dirname, '..'), stdio: 'inherit' });
   pathCheckModule = require('../dist/main/system/registry-fixer/path-check.js');
   scanUninstallModule = require('../dist/main/system/registry-fixer/scan-uninstall.js');
   scanMuiCacheModule = require('../dist/main/system/registry-fixer/scan-mui-cache.js');
+  fixModule = require('../dist/main/system/registry-fixer/fix.js');
+  backupModule = require('../dist/main/system/registry-fixer/backup.js');
   registryFixerModule = require('../dist/main/system/registry-fixer/index.js');
+  executeModule = require('../dist/main/system/framework/execute.js');
 }
 
 const {
@@ -52,6 +63,21 @@ const {
 } = scanMuiCacheModule;
 
 const { scanRegistryFixer } = registryFixerModule;
+
+const {
+  createRegistryFixPlan,
+  executeRegistryFix,
+  validateRegistryFixTarget,
+} = fixModule;
+
+const {
+  formatRegistryFixerBackup,
+  writeRegistryFixerBackupFile,
+  validateRegBackupFile,
+  buildBackupSnippet,
+} = backupModule;
+
+const { executeRegistryDeletions } = executeModule;
 
 let failedCount = 0;
 let passedCount = 0;
@@ -704,6 +730,283 @@ async function runTests() {
       statFn: async () => ({ isDirectory: () => true }),
     });
     assert(resValidOldApp.issues.length === 0, '7c. Existing directory is NOT flagged regardless of age or name');
+  }
+
+  console.log('\n=== Section 8: Target Validation & Safety Policy (validateRegistryFixTarget) ===\n');
+
+  {
+    const emptyCheck = validateRegistryFixTarget('HKLM', '', 'orphaned_uninstall');
+    assert(!emptyCheck.allowed, '8a. Empty keyPath is rejected');
+
+    const nullCheck = validateRegistryFixTarget('HKLM', 'SOFTWARE\\App\0Bad', 'orphaned_uninstall');
+    assert(!nullCheck.allowed, '8b. KeyPath with null byte is rejected');
+
+    const protectedCheck = validateRegistryFixTarget('HKLM', 'SYSTEM\\CurrentControlSet\\Control\\SafeBoot', 'orphaned_uninstall');
+    assert(!protectedCheck.allowed, '8c. Protected framework registry path is rejected');
+
+    const rootUninstallCheck = validateRegistryFixTarget('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'orphaned_uninstall');
+    assert(!rootUninstallCheck.allowed, '8d. Root Uninstall container itself cannot be deleted');
+
+    const validTargetCheck = validateRegistryFixTarget('HKLM', 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadApp123', 'orphaned_uninstall');
+    assert(validTargetCheck.allowed, '8e. Valid orphaned uninstall subkey is allowed');
+  }
+
+  console.log('\n=== Section 9: Plan Generation (createRegistryFixPlan) ===\n');
+
+  {
+    const sampleIssues = [
+      {
+        id: 'uninst-1',
+        type: 'orphaned_uninstall',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadApp',
+        displayName: 'Dead App',
+        severity: 'low',
+        selected: true,
+        evidence: { checkedPath: 'C:\\DeadApp', outcome: 'gone' },
+      },
+      {
+        id: 'mui-1',
+        type: 'stale_mui_cache',
+        hive: 'HKCU',
+        keyPath: 'Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache',
+        valueName: 'C:\\Old\\tool.exe.ApplicationName',
+        displayName: 'Old Tool',
+        severity: 'low',
+        selected: true,
+        evidence: { checkedPath: 'C:\\Old\\tool.exe', outcome: 'gone' },
+      },
+    ];
+
+    const planBoth = createRegistryFixPlan(sampleIssues);
+    assert(planBoth.module === 'registry-fixer', '9a. Plan module is "registry-fixer"');
+    assert(planBoth.reversibility === 'reversible', '9b. Plan reversibility is "reversible" (.reg backup guarantee)');
+    assert(planBoth.totalReclaimableBytes === null, '9c. totalReclaimableBytes is strictly null (never estimated)');
+    assert(planBoth.requiresElevation === true, '9d. requiresElevation is true because HKLM is targeted');
+    assert(planBoth.actions.length === 2, '9e. Contains 2 actions');
+
+    const uninstAction = planBoth.actions.find((a) => a.id === 'uninst-1');
+    assert(uninstAction && uninstAction.kind === 'registry-key', '9f. Orphaned uninstall maps to "registry-key" action');
+    assert(uninstAction.reclaimableBytes === null, '9g. Action reclaimableBytes is strictly null');
+
+    const muiAction = planBoth.actions.find((a) => a.id === 'mui-1');
+    assert(muiAction && muiAction.kind === 'registry-value', '9h. Stale MUICache maps to "registry-value" action');
+
+    // HKCU-only plan requiresElevation is false
+    const planHkcu = createRegistryFixPlan([sampleIssues[1]]);
+    assert(planHkcu.requiresElevation === false, '9i. requiresElevation is false when only HKCU is targeted');
+
+    // Filtering by selectedIssueIds
+    const planFiltered = createRegistryFixPlan(sampleIssues, ['mui-1']);
+    assert(planFiltered.actions.length === 1 && planFiltered.actions[0].id === 'mui-1', '9j. Honors selectedIssueIds filter');
+
+    // Target violating protection goes to blocked
+    const unsafeIssue = {
+      id: 'unsafe-1',
+      type: 'orphaned_uninstall',
+      hive: 'HKLM',
+      keyPath: 'SYSTEM\\CurrentControlSet\\Control\\SafeBoot',
+      displayName: 'System Core',
+      severity: 'low',
+      selected: true,
+      evidence: { checkedPath: 'C:\\Windows', outcome: 'gone' },
+    };
+    const planUnsafe = createRegistryFixPlan([unsafeIssue]);
+    assert(planUnsafe.actions.length === 0, '9k. Unsafe target is not added to planned actions');
+    assert(planUnsafe.blocked.length === 1, '9l. Unsafe target is recorded in blocked list');
+  }
+
+  console.log('\n=== Section 10: Backup Formatting & File Validation (format / write / validate) ===\n');
+
+  {
+    const backupEntries = [
+      {
+        type: 'orphaned_uninstall',
+        hive: 'HKLM',
+        keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadApp',
+        values: [
+          { name: 'DisplayName', type: 'String', data: 'Dead App' },
+          { name: 'InstallLocation', type: 'String', data: 'C:\\DeadApp' },
+        ],
+      },
+      {
+        type: 'stale_mui_cache',
+        hive: 'HKCU',
+        keyPath: 'Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache',
+        valueName: 'C:\\Old\\tool.exe.ApplicationName',
+        valueType: 'REG_SZ',
+        data: 'Old Tool',
+      },
+    ];
+
+    const content = formatRegistryFixerBackup(backupEntries, '2026-10-18T00:00:00.000Z');
+    assert(content.startsWith('Windows Registry Editor Version 5.00'), '10a. Starts with Windows Registry Editor header');
+    assert(content.includes('; DeskKlean Backup Metadata'), '10b. Contains metadata comment block');
+    assert(content.includes('\r\n'), '10c. Uses CRLF line endings');
+    assert(content.includes('[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadApp]'), '10d. Contains long-form HKLM section header');
+    assert(content.includes('[HKEY_CURRENT_USER\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache]'), '10e. Contains long-form HKCU section header');
+
+    // Test writing and validating file on disk
+    const tmpDir = path.join(os.tmpdir(), `deskklean-test-${Date.now()}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const tmpBackupFile = path.join(tmpDir, 'test-backup.reg');
+
+    try {
+      writeRegistryFixerBackupFile(tmpBackupFile, content);
+      assert(fs.existsSync(tmpBackupFile), '10f. writeRegistryFixerBackupFile creates file');
+
+      // Verify BOM
+      const fileBytes = fs.readFileSync(tmpBackupFile);
+      assert(fileBytes[0] === 0xff && fileBytes[1] === 0xfe, '10g. File starts with UTF-16LE BOM (FF FE)');
+
+      const valResult = validateRegBackupFile(tmpBackupFile);
+      assert(valResult.valid === true, '10h. validateRegBackupFile reports valid: true for correctly formatted backup');
+
+      // Negative validation tests
+      const nonExistentVal = validateRegBackupFile(path.join(tmpDir, 'does-not-exist.reg'));
+      assert(nonExistentVal.valid === false, '10i. validateRegBackupFile returns false for non-existent file');
+
+      const corruptedNoBom = path.join(tmpDir, 'no-bom.reg');
+      fs.writeFileSync(corruptedNoBom, 'Windows Registry Editor Version 5.00\r\n\r\n[HKEY_CURRENT_USER\\Test]\r\n', 'utf8');
+      const valNoBom = validateRegBackupFile(corruptedNoBom);
+      assert(valNoBom.valid === false && valNoBom.reason.includes('BOM'), '10j. validateRegBackupFile rejects file missing UTF-16LE BOM');
+
+      const corruptedBadHeader = path.join(tmpDir, 'bad-header.reg');
+      fs.writeFileSync(corruptedBadHeader, '\uFEFFNot A Reg File\r\n', { encoding: 'utf16le' });
+      const valBadHeader = validateRegBackupFile(corruptedBadHeader);
+      assert(valBadHeader.valid === false && valBadHeader.reason.includes('header'), '10k. validateRegBackupFile rejects invalid header');
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {}
+    }
+  }
+
+  console.log('\n=== Section 11: Execution Engine Pipeline (executeRegistryDeletions / executeRegistryFix) ===\n');
+
+  {
+    const hklmIssue = {
+      id: 'hklm-test-1',
+      type: 'orphaned_uninstall',
+      hive: 'HKLM',
+      keyPath: 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\DeadAdminApp',
+      displayName: 'Dead Admin App',
+      severity: 'low',
+      selected: true,
+      evidence: { checkedPath: 'C:\\DeadAdminApp', outcome: 'gone' },
+    };
+
+    // 11a. Rail: Refuse to run unelevated if HKLM entries are selected
+    const resElevCheck = await executeRegistryFix([hklmIssue], undefined, {
+      isElevatedFn: async () => false,
+    });
+    assert(resElevCheck.success === false, '11a. Refuses execution up front when unelevated and HKLM is targeted');
+    assert(resElevCheck.message.includes('Administrator rights are required'), '11b. Message informs user admin rights required');
+
+    // 11c. Rail: An entry already removed by another process is a no-op (skipped: 1, not success, not fail)
+    const hkcuIssue = {
+      id: 'hkcu-test-1',
+      type: 'stale_mui_cache',
+      hive: 'HKCU',
+      keyPath: 'Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache',
+      valueName: 'C:\\Old\\gone.exe.ApplicationName',
+      displayName: 'Gone Tool',
+      severity: 'low',
+      selected: true,
+      evidence: { checkedPath: 'C:\\Old\\gone.exe', outcome: 'gone' },
+    };
+
+    const tmpBackupDir = path.join(os.tmpdir(), `deskklean-exec-test-${Date.now()}`);
+    fs.mkdirSync(tmpBackupDir, { recursive: true });
+
+    try {
+      const planAlreadyAbsent = createRegistryFixPlan([hkcuIssue]);
+      const resAbsent = await executeRegistryDeletions(planAlreadyAbsent, undefined, {
+        backupDirOverride: tmpBackupDir,
+        keyExistsFn: async () => false,
+        readValueFn: async () => ({ exists: false }),
+      });
+      assert(resAbsent.success === false, '11c. Entry already absent returns success: false');
+      assert(resAbsent.skipped === 1, '11d. Entry already absent increments skipped count');
+      assert(resAbsent.completed === 0 && resAbsent.failed === 0, '11e. Entry already absent has completed: 0 and failed: 0');
+      assert(resAbsent.message.includes('already absent'), '11f. Message notes already absent');
+
+      // 11g. Rail: Backup validation failure aborts before any delete call is made
+      let deleteCalled = false;
+      const planValFail = createRegistryFixPlan([hkcuIssue]);
+      const resValFail = await executeRegistryDeletions(planValFail, undefined, {
+        backupDirOverride: tmpBackupDir,
+        keyExistsFn: async () => true,
+        readValueFn: async () => ({ exists: true, type: 'REG_SZ', data: 'Tool' }),
+        readSubKeyValuesWithTypesFn: async () => [],
+        validateBackupFn: () => ({ valid: false, reason: 'Simulated backup corruption' }),
+        deleteValueFn: async () => { deleteCalled = true; },
+      });
+      assert(resValFail.success === false, '11g. Aborts when backup validation fails');
+      assert(deleteCalled === false, '11h. NO deletion call is executed when backup validation fails');
+      assert(resValFail.message.includes('Backup validation failed'), '11i. Reports validation failure reason');
+
+      // 11j. Rail: A delete that silently did nothing must report failure (verification check)
+      const planSilentFail = createRegistryFixPlan([hkcuIssue]);
+      const resSilentFail = await executeRegistryDeletions(planSilentFail, undefined, {
+        backupDirOverride: tmpBackupDir,
+        keyExistsFn: async () => true,
+        readValueFn: async () => ({ exists: true, type: 'REG_SZ', data: 'Tool' }), // Still exists after delete!
+        readSubKeyValuesWithTypesFn: async () => [],
+        deleteValueFn: async () => {},
+      });
+      assert(resSilentFail.success === false, '11j. If entry still exists after delete, reports failure (never false success)');
+      assert(resSilentFail.failed === 1, '11k. Failed count incremented when delete silently failed');
+
+      // 11l. Successful execution confirmed
+      let valueDeleted = false;
+      let checkCount = 0;
+      const planSuccess = createRegistryFixPlan([hkcuIssue]);
+      const resSuccess = await executeRegistryDeletions(planSuccess, undefined, {
+        backupDirOverride: tmpBackupDir,
+        keyExistsFn: async () => false,
+        readValueFn: async () => {
+          checkCount++;
+          // First check: exists (pre-flight). Second check: gone (post-delete verification).
+          return { exists: checkCount === 1, type: 'REG_SZ', data: 'Tool' };
+        },
+        readSubKeyValuesWithTypesFn: async () => [],
+        deleteValueFn: async () => { valueDeleted = true; },
+      });
+      assert(resSuccess.success === true, '11l. Confirmed deletion returns success: true');
+      assert(resSuccess.completed === 1, '11m. Completed count is 1');
+      assert(resSuccess.failed === 0, '11n. Failed count is 0');
+      assert(valueDeleted === true, '11o. deleteValueFn was called');
+      assert(typeof resSuccess.backupPath === 'string' && fs.existsSync(resSuccess.backupPath), '11p. Backup file exists on disk');
+
+      // 11q. Partial failure reporting
+      const issueA = { ...hkcuIssue, id: 'item-a', valueName: 'val-a' };
+      const issueB = { ...hkcuIssue, id: 'item-b', valueName: 'val-b' };
+      const planPartial = createRegistryFixPlan([issueA, issueB]);
+      let callMap = {};
+      const resPartial = await executeRegistryDeletions(planPartial, undefined, {
+        backupDirOverride: tmpBackupDir,
+        readValueFn: async (h, k, v) => {
+          if (!callMap[v]) {
+            callMap[v] = 1;
+            return { exists: true, type: 'REG_SZ', data: 'Tool' };
+          }
+          // On second read: val-a was deleted, val-b still exists
+          return { exists: v === 'val-b', type: 'REG_SZ', data: 'Tool' };
+        },
+        readSubKeyValuesWithTypesFn: async () => [],
+        deleteValueFn: async (h, k, v) => {
+          if (v === 'val-b') throw new Error('Access denied');
+        },
+      });
+      assert(resPartial.success === false, '11q. Partial failure reports success: false');
+      assert(resPartial.completed === 1, '11r. Partial failure reports completed: 1');
+      assert(resPartial.failed === 1, '11s. Partial failure reports failed: 1');
+    } finally {
+      try {
+        fs.rmSync(tmpBackupDir, { recursive: true, force: true });
+      } catch {}
+    }
   }
 
   console.log('\n========================================');

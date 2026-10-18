@@ -19,6 +19,7 @@ import {
   ExecuteResult,
   RegistryScanResult,
   RegistryFixerIssue,
+  RegistryFixerResult,
   RegistryBackup,
   StartupItem,
   InstalledApp,
@@ -50,7 +51,7 @@ import {
 } from './system/framework';
 import { scanSmartClean } from './system/smartclean/scan';
 import { createSmartCleanPlan } from './system/smartclean/execute';
-import { scanRegistryFixer } from './system/registry-fixer';
+import { scanRegistryFixer, createRegistryFixPlan, executeRegistryFix } from './system/registry-fixer';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -762,14 +763,15 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     return scanRegistryFixer();
   });
 
-  ipcMain.handle(IPC_CHANNELS.REGISTRY_FIX, async (_, issueIds: string[], createBackup: boolean) => {
-    return {
-      success: false,
-      fixedCount: 0,
-      message:
-        'Registry cleaning is not implemented yet. No registry keys were modified and no backup was created.',
-    };
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.REGISTRY_FIX,
+    async (_, issueIds?: string[]): Promise<RegistryFixerResult> => {
+      const scanRes = await scanRegistryFixer();
+      return executeRegistryFix(scanRes.issues, issueIds, {
+        logActivity: (item) => logActivity(item as any),
+      });
+    }
+  );
 
   ipcMain.handle(IPC_CHANNELS.REGISTRY_GET_BACKUPS, async (): Promise<RegistryBackup[]> => {
     try {
@@ -945,6 +947,10 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
         lastSmartCleanReport ||
         (await scanSmartClean(options?.selectedCategoryIds));
       return createSmartCleanPlan(report, options?.selectedCategoryIds, options);
+    }
+    if (module === 'registry-fixer' || module === 'registry') {
+      const issues = options?.issues || (await scanRegistryFixer()).issues;
+      return createRegistryFixPlan(issues, options?.selectedIssueIds, options);
     }
     throw new Error(`Module ${module} is not implemented in framework yet`);
   });
