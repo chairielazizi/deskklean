@@ -46,6 +46,7 @@ const {
 const {
   scanMuiCache,
   extractMuiCacheFilePath,
+  stripKnownSuffix,
   isCandidateFilePath,
   KNOWN_MUI_CACHE_SUFFIXES,
 } = scanMuiCacheModule;
@@ -225,21 +226,32 @@ async function runTests() {
       '3a. Known suffixes include .ApplicationCompany'
     );
     assert(
+      KNOWN_MUI_CACHE_SUFFIXES.includes('.FriendlyAppName'),
+      '3b. Known suffixes include .FriendlyAppName'
+    );
+    assert(
       KNOWN_MUI_CACHE_SUFFIXES.includes('.ApplicationName'),
-      '3b. Known suffixes include .ApplicationName'
+      '3c. Known suffixes include .ApplicationName'
     );
 
     const extracted1 = extractMuiCacheFilePath('C:\\Users\\User\\Downloads\\setup_temp.exe.ApplicationCompany');
     assert(
       extracted1 === 'C:\\Users\\User\\Downloads\\setup_temp.exe',
-      '3c. Strips .ApplicationCompany correctly',
+      '3d. Strips .ApplicationCompany correctly',
       `Got: ${extracted1}`
+    );
+
+    const extractedFriendly = extractMuiCacheFilePath('C:\\Windows\\explorer.exe.FriendlyAppName');
+    assert(
+      extractedFriendly === 'C:\\Windows\\explorer.exe',
+      '3e. Strips .FriendlyAppName correctly',
+      `Got: ${extractedFriendly}`
     );
 
     const extracted2 = extractMuiCacheFilePath('C:\\Users\\User\\Downloads\\setup_temp.exe.ApplicationName');
     assert(
       extracted2 === 'C:\\Users\\User\\Downloads\\setup_temp.exe',
-      '3d. Strips .ApplicationName correctly',
+      '3f. Strips .ApplicationName correctly',
       `Got: ${extracted2}`
     );
 
@@ -263,6 +275,23 @@ async function runTests() {
     assert(isCandidateFilePath('\\\\server\\share\\tool.exe') === true, '3h. UNC path is valid candidate');
     assert(isCandidateFilePath('LangID') === false, '3i. "LangID" is rejected as non-path');
     assert(isCandidateFilePath('') === false, '3j. Empty string is rejected as candidate');
+  }
+
+  // 3c. stripKnownSuffix reports matched status
+  {
+    const sKnown = stripKnownSuffix('C:\\Windows\\explorer.exe.FriendlyAppName');
+    assert(sKnown.suffixMatched === true && sKnown.filePath === 'C:\\Windows\\explorer.exe', '3k. stripKnownSuffix reports suffixMatched: true for known suffix');
+    assert(sKnown.matchedSuffix === '.FriendlyAppName', '3l. stripKnownSuffix identifies matched suffix');
+
+    const sUnknown = stripKnownSuffix('C:\\Windows\\explorer.exe.SomeSuffixNobodyListed');
+    assert(sUnknown.suffixMatched === false && sUnknown.filePath === 'C:\\Windows\\explorer.exe.SomeSuffixNobodyListed', '3m. stripKnownSuffix reports suffixMatched: false for unknown suffix');
+    assert(sUnknown.matchedSuffix === undefined, '3n. stripKnownSuffix has undefined matchedSuffix for unknown suffix');
+
+    const sIcon = stripKnownSuffix('C:\\App\\tool.exe.ApplicationIcon');
+    assert(sIcon.suffixMatched === false, '3o. stripKnownSuffix reports suffixMatched: false for .ApplicationIcon');
+
+    const sLang = stripKnownSuffix('C:\\App\\tool.exe.Language');
+    assert(sLang.suffixMatched === false, '3p. stripKnownSuffix reports suffixMatched: false for .Language');
   }
 
   console.log('\n=== Section 4: Orphaned Uninstall Detection (scanUninstall) ===\n');
@@ -515,6 +544,88 @@ async function runTests() {
 
     assert(resMui.indeterminateCount === 1, '5g. EPERM failure increments indeterminateCount');
     assert(resMui.skippedNetworkCount === 1, '5h. UNC path increments skippedNetworkCount');
+  }
+
+  // 5i-5k. Regression: Unknown suffix produces ZERO flags and increments indeterminateCount (CLASS fix)
+  {
+    const resUnknown = await scanMuiCache({
+      readValues: async () => ({
+        'C:\\Windows\\explorer.exe.SomeSuffixNobodyListed': 'Windows Explorer',
+      }),
+      statFn: async () => {
+        // Even when filesystem check fails (ENOENT), unknown suffix must NOT be flagged!
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+    assert(resUnknown.issues.length === 0, '5i. Unknown suffix produces ZERO flags (prevents 318 false-positive bug)');
+    assert(resUnknown.indeterminateCount === 1, '5j. Unknown suffix increments indeterminateCount');
+    assert(resUnknown.skippedNetworkCount === 0, '5k. Unknown suffix on local drive does not affect skippedNetworkCount');
+  }
+
+  // 5l-5m. Regression: .ApplicationIcon and .Language produce zero flags and increment indeterminateCount
+  {
+    const resOtherSuffixes = await scanMuiCache({
+      readValues: async () => ({
+        'C:\\Program Files\\Vendor\\Tool.exe.ApplicationIcon': '@{Package?ms-resource://...}',
+        'C:\\Program Files\\Vendor\\Tool.exe.Language': 'en-US',
+      }),
+      statFn: async () => {
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+    assert(resOtherSuffixes.issues.length === 0, '5l. .ApplicationIcon and .Language produce ZERO flags');
+    assert(resOtherSuffixes.indeterminateCount === 2, '5m. .ApplicationIcon and .Language increment indeterminateCount (2 uncheckable entries)');
+  }
+
+  // 5n-5p. Step 1: Raw value name that resolves as real path is NOT flagged even if it ends with known suffix
+  {
+    let strippedChecked = false;
+    const resRawExists = await scanMuiCache({
+      readValues: async () => ({
+        'C:\\Tools\\setup.ApplicationName': 'Literal setup.ApplicationName tool',
+      }),
+      statFn: async (targetPath) => {
+        if (targetPath === 'C:\\Tools\\setup.ApplicationName') {
+          return { isFile: () => true }; // The literal file exists
+        }
+        if (targetPath === 'C:\\Tools\\setup') {
+          strippedChecked = true;
+          const err = new Error('ENOENT');
+          err.code = 'ENOENT';
+          throw err;
+        }
+        return {};
+      },
+    });
+    assert(resRawExists.issues.length === 0, '5n. Raw value name that exists is NOT flagged (Step 1)');
+    assert(resRawExists.indeterminateCount === 0, '5o. Raw existing path does not increment indeterminateCount');
+    assert(strippedChecked === false, '5p. Step 1 skips before stripping: stripped path was never checked');
+  }
+
+  // 5q-5t. Step 3: All three known suffixes strip and flag correctly when target is genuinely gone
+  {
+    const resKnownGone = await scanMuiCache({
+      readValues: async () => ({
+        'C:\\Program Files\\OldApp\\app.exe.ApplicationCompany': 'Old Corp',
+        'C:\\Program Files\\OldApp\\app.exe.FriendlyAppName': 'Old Application',
+        'C:\\Program Files\\OldApp\\app.exe.ApplicationName': 'Old App Display',
+      }),
+      statFn: async () => {
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+    assert(resKnownGone.issues.length === 3, '5q. All 3 known suffixes flag when target file is genuinely gone');
+    assert(resKnownGone.indeterminateCount === 0, '5r. Zero indeterminate for known suffixes with confirmed ENOENT');
+    for (const issue of resKnownGone.issues) {
+      assert(issue.evidence.checkedPath === 'C:\\Program Files\\OldApp\\app.exe', '5s. Evidence checkedPath is stripped executable path');
+      assert(issue.evidence.outcome === 'gone', '5t. Evidence outcome is strictly "gone"');
+    }
   }
 
   console.log('\n=== Section 6: Combined RegistryFixer Scanner (scanRegistryFixer) ===\n');

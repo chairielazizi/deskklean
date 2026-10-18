@@ -14,6 +14,7 @@ export const MUI_CACHE_KEY_PATH =
 
 export const KNOWN_MUI_CACHE_SUFFIXES = [
   '.ApplicationCompany',
+  '.FriendlyAppName',
   '.ApplicationName',
 ] as const;
 
@@ -28,19 +29,48 @@ export interface MuiCacheScanResult {
 }
 
 /**
- * Extracts the file path from a MUICache value name by stripping known suffixes
- * (.ApplicationCompany, .ApplicationName) and trimming quotes.
+ * Suffix stripping result reporting whether a known suffix was matched.
  */
-export function extractMuiCacheFilePath(valueName: string): string {
-  if (typeof valueName !== 'string') return '';
+export interface StripSuffixResult {
+  filePath: string;
+  suffixMatched: boolean;
+  matchedSuffix?: string;
+}
+
+/**
+ * Strips known suffixes (.ApplicationCompany, .FriendlyAppName, .ApplicationName)
+ * from a MUICache value name. Reports whether a known suffix was matched.
+ */
+export function stripKnownSuffix(valueName: string): StripSuffixResult {
+  if (typeof valueName !== 'string') {
+    return { filePath: '', suffixMatched: false };
+  }
   let cleaned = valueName.trim();
+  let suffixMatched = false;
+  let matchedSuffix: string | undefined;
+
   for (const suffix of KNOWN_MUI_CACHE_SUFFIXES) {
     if (cleaned.toLowerCase().endsWith(suffix.toLowerCase())) {
       cleaned = cleaned.slice(0, -suffix.length);
+      suffixMatched = true;
+      matchedSuffix = suffix;
       break;
     }
   }
-  return cleanPath(cleaned);
+
+  return {
+    filePath: cleanPath(cleaned),
+    suffixMatched,
+    matchedSuffix,
+  };
+}
+
+/**
+ * Extracts the file path from a MUICache value name by stripping known suffixes
+ * (.ApplicationCompany, .FriendlyAppName, .ApplicationName) and trimming quotes.
+ */
+export function extractMuiCacheFilePath(valueName: string): string {
+  return stripKnownSuffix(valueName).filePath;
 }
 
 /**
@@ -49,7 +79,8 @@ export function extractMuiCacheFilePath(valueName: string): string {
  */
 export function isCandidateFilePath(p: string): boolean {
   if (!p) return false;
-  return /^[a-zA-Z]:[\\/]/.test(p) || /^[\\/]{2}/.test(p);
+  const cleaned = cleanPath(p);
+  return /^[a-zA-Z]:[\\/]/.test(cleaned) || /^[\\/]{2}/.test(cleaned);
 }
 
 /**
@@ -57,12 +88,21 @@ export function isCandidateFilePath(p: string): boolean {
  *
  * Algorithm per docs/PHASE-7-8-REGISTRYFIXER.md:
  * For each Value in MuiCache:
- *   1. Extract file path from value name (strip known suffixes)
- *   2. If filepath is UNC path or mapped network drive -> Skip, increment skippedNetworkCount
- *   3. outcome = checkPathOutcome(filepath)
- *      - 'gone': Flag as stale_mui_cache, evidence: { checkedPath, outcome: 'gone' }
- *      - 'indeterminate': Skip, increment indeterminateCount
- *      - 'exists': Skip
+ *   # Skip non-path entries like "LangID"
+ *   STEP 1 — Try the RAW value name as a path first.
+ *     If checkPathOutcome(valueName) is 'exists', skip. A genuine filename can end
+ *     in a string that looks like a known suffix (e.g. a file literally named
+ *     "setup.ApplicationName"), and it must not be treated as stale.
+ *   STEP 2 — Strip a known suffix.
+ *     If NO known suffix matched, the entry is INDETERMINATE: increment
+ *     indeterminateCount and skip. Do NOT fall through to the existence check.
+ *     We cannot tell where the path ends, so we cannot prove anything is gone.
+ *   STEP 3 — Only when a suffix DID match:
+ *     - If filepath is UNC path or mapped network drive -> Skip, increment skippedNetworkCount
+ *     - outcome = checkPathOutcome(filepath)
+ *       - 'gone': Flag as stale_mui_cache, evidence: { checkedPath, outcome: 'gone' }
+ *       - 'indeterminate': Skip, increment indeterminateCount
+ *       - 'exists': Skip
  */
 export async function scanMuiCache(
   options?: MuiCacheScanOptions
@@ -81,21 +121,44 @@ export async function scanMuiCache(
   }
 
   for (const valueName of Object.keys(values)) {
-    const filePath = extractMuiCacheFilePath(valueName);
-
     // Skip non-path entries like "LangID"
-    if (!isCandidateFilePath(filePath)) {
+    if (!isCandidateFilePath(valueName)) {
       continue;
     }
 
-    // Network paths are skipped
-    const isRemote = await isNetworkPath(filePath, options);
+    // STEP 1 — Try the RAW value name as a path first.
+    // If checkPathOutcome(valueName) is 'exists', skip. A genuine filename can end
+    // in a string that looks like a known suffix (e.g. a file literally named
+    // "setup.ApplicationName"), and it must not be treated as stale.
+    // Network paths are never scanned on the filesystem (reachability is not provability).
+    const isRawRemote = await isNetworkPath(valueName, options);
+    if (!isRawRemote) {
+      const rawOutcome = await checkPathOutcome(valueName, options);
+      if (rawOutcome === 'exists') {
+        continue;
+      }
+    }
+
+    // STEP 2 — Strip a known suffix.
+    // If NO known suffix matched, the entry is INDETERMINATE: increment
+    // indeterminateCount and skip. Do NOT fall through to the existence check.
+    // This is the critical change. We cannot tell where the path ends, so we cannot
+    // prove anything is gone.
+    const { filePath, suffixMatched } = stripKnownSuffix(valueName);
+    if (!suffixMatched) {
+      indeterminateCount++;
+      continue;
+    }
+
+    // STEP 3 — Only when a suffix DID match:
+    // - skip network paths (existing behaviour, increment skippedNetworkCount)
+    // - checkPathOutcome(filepath): 'gone' flags, 'indeterminate' counts, 'exists' skips
+    const isRemote = isRawRemote || (await isNetworkPath(filePath, options));
     if (isRemote) {
       skippedNetworkCount++;
       continue;
     }
 
-    // Three outcomes, only one is a flag
     const outcome = await checkPathOutcome(filePath, options);
     if (outcome === 'gone') {
       const fileName = path.win32.basename(filePath) || valueName;
