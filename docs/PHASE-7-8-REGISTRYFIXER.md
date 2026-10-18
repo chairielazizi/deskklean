@@ -221,21 +221,34 @@ Detection algorithm:
 ```
 For each Value in MuiCache:
   # Value name format: <filepath>.<suffix>
-  Extract file path from value name (strip known suffixes)
+  valueName = the raw value name
 
-  # Network paths are skipped
-  If filepath is a UNC path or a mapped network drive:
-    Skip, increment skippedNetworkCount
+  # STEP 1 — the value name may itself be a real path.
+  # A genuine filename can end in a string that looks like a known suffix
+  # (e.g. a file literally named "setup.ApplicationName"). If the whole value
+  # name resolves, the entry is not stale and nothing needs stripping.
+  If checkPathOutcome(valueName) is "exists":
+    Skip  # not stale
 
-  # Three outcomes, only one is a flag
-  outcome = checkPathOutcome(filepath)
-  If outcome is "gone":
-    Flag as stale_mui_cache
-    Evidence: { checkedPath: filepath, outcome: "gone" }
-  If outcome is "indeterminate":
-    Skip, increment indeterminateCount
+  # STEP 2 — strip a known suffix. If NONE matched, we cannot tell where the
+  # path ends, so we cannot prove anything is gone. This is the critical step:
+  # an unmatched suffix must NOT fall through to the existence check.
+  (filepath, suffixMatched) = stripKnownSuffix(valueName)
+  If suffixMatched is false:
+    Skip, increment indeterminateCount  # NOT a flag — see the rails below
+
+  # STEP 3 — only a proven absence is a flag
   Else:
-    Skip  # "exists"
+    If filepath is a UNC path or a mapped network drive:
+      Skip, increment skippedNetworkCount
+    outcome = checkPathOutcome(filepath)
+    If outcome is "gone":
+      Flag as stale_mui_cache
+      Evidence: { checkedPath: filepath, outcome: "gone" }
+    If outcome is "indeterminate":
+      Skip, increment indeterminateCount
+    Else:
+      Skip  # "exists"
 ```
 
 Rails:
@@ -244,6 +257,16 @@ Rails:
   The file path is extracted from the value name; if that file is provably
   absent, the cached display string is dead weight. `indeterminate` does not
   qualify — see the three-outcome check above.
+- **An unmatched suffix is NEVER a flag.** If no known suffix matches the value
+  name, the path boundary is unknown and nothing can be proven. The entry is
+  counted as `indeterminate` and skipped. Falling through to the existence check
+  instead would test a filename that cannot exist and declare the entry dead.
+  This is not hypothetical: it produced **318 false positives on a real Windows
+  machine**, including `explorer.exe`, Steam, 7-Zip and DaVinci Resolve, because
+  `.FriendlyAppName` was missing from the list.
+- **The suffix list is an optimisation, not a safety dependency.** A missing
+  suffix must degrade to "not checked", never to "flagged". That is what makes
+  the module safe without the list being complete.
 - **Network paths are skipped here too.** A file on an unreachable share cannot
   be proven gone, so it is not listed.
 - **Multiple suffixes may reference the same file.** If `setup.exe.ApplicationCompany`
@@ -461,8 +484,14 @@ Pure logic, runs on the build machine, required before the phase is done:
   entries with an existing directory are not flagged.
 - Stale MUICache detection: entries with a missing file are flagged, entries with
   an existing file are not flagged.
-- Suffix stripping: `.ApplicationCompany` and `.ApplicationName` are stripped
-  correctly from value names.
+- Suffix stripping: `.ApplicationCompany`, `.FriendlyAppName` and
+  `.ApplicationName` are stripped correctly from value names.
+- Unmatched suffix: a value name whose suffix is NOT in the known list produces
+  ZERO flags and increments `indeterminateCount`. This is the regression test for
+  the 318-false-positive incident; it must fail if the unmatched case ever falls
+  through to the existence check.
+- Whole-value-name path: a value name that resolves as a real path is not stale,
+  even if it ends in a string that looks like a known suffix.
 - Evidence field: every flagged issue carries the correct `checkedPath` and
   `outcome: 'gone'`.
 - No heuristic flags: no entry is flagged based on age, publisher, or any signal
@@ -496,7 +525,7 @@ Windows acceptance, run by the owner:
 | A valid entry is flagged because its `InstallLocation` is a network path or UNC path that is temporarily unavailable | **Resolved.** Network paths (UNC and mapped drives) are skipped entirely — neither flagged nor counted as indeterminate. Reachability is not provability. The skipped count is surfaced so the omission is visible. |
 | A valid entry is flagged because its target exists but cannot be read (permission denied, I/O error) | **Resolved.** The check distinguishes `ENOENT` (gone) from every other failure (indeterminate). Only `gone` is flagged; indeterminate entries are counted, never listed. |
 | `SystemComponent` identification is wrong | UNVERIFIED. The safest approach is to skip entries with `SystemComponent = 1`, but this value's exact semantics need Windows confirmation. Until verified, also skip entries whose publisher is Microsoft Corporation. |
-| MUICache suffix set is incomplete | UNVERIFIED. The known suffixes (`.ApplicationCompany`, `.ApplicationName`) are from the existing mock data. The full set needs Windows enumeration. Until verified, only strip known suffixes. |
+| MUICache suffix set is incomplete | **Mitigated, and empirically shown to matter.** The known suffixes are `.ApplicationCompany`, `.FriendlyAppName` and `.ApplicationName`; the full set is still UNVERIFIED. The earlier interim rule ("only strip known suffixes") was **wrong** — it fails open, treating an unknown suffix as part of the path and flagging a live file. It produced 318 false positives on a real machine. The rule is now: an unmatched suffix yields `indeterminate`, never a flag. A missing suffix degrades to "not checked" rather than "flagged". |
 | The `.reg` backup is written but not restorable | A `.reg` file is a backup, not a restore. The backup must be validated (header check, parseable) before the delete proceeds. The restore path reuses the Phase 2 infrastructure. |
 | Partial success reported as success | `success` requires `completed === actions.length`; arithmetic is unit-tested. |
 | The fix is attempted on an entry that was already removed by another process | The verify step re-reads the registry. If the entry is already gone, the fix reports it as "already absent" — not as a success or a failure, but as a no-op with an honest message. |
@@ -510,5 +539,5 @@ Windows acceptance, run by the owner:
 |---|---|---|
 | OQ-1 (from roadmap) | Does Windows 10+ reject a rewritten `UserChoice` hash, as Chromium does with `Secure Preferences`? | The file-association category — held until resolved |
 | OQ-6 | What is the exact identification mechanism for "system components" in Uninstall keys? Is `SystemComponent = 1` the correct and complete test? | The system-component exclusion |
-| OQ-7 | What is the complete set of MUICache value name suffixes? | The stale MUICache detection |
+| OQ-7 | What is the complete set of MUICache value name suffixes? Known so far: `.ApplicationCompany`, `.FriendlyAppName`, `.ApplicationName`. Still open as a **completeness** question — but no longer a **safety** question, because an unmatched suffix is now `indeterminate` rather than a flag. | Completeness of MUICache detection only. Does not block safety. |
 | OQ-8 | ~~Should `InstallLocation` paths that are network shares (UNC paths) be checked differently?~~ **Resolved (v1 decision):** network paths (UNC and mapped drives) are skipped entirely and counted; the check distinguishes `ENOENT` from every other failure so permission errors are never mistaken for absence. | Nothing — resolved |
