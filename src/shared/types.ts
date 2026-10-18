@@ -483,6 +483,19 @@ export interface DuplicateScanConfig {
   minSizeBytes: number;
 }
 
+export interface DuplicateScanResult {
+  root: string;
+  scannedFileCount: number;
+  skippedCount: number;
+  belowMinSizeCount: number;
+  duplicateGroupCount: number;
+  duplicateFileCount: number;
+  wastedBytes: number;
+  groups: DuplicateGroup[];
+  scanDurationMs: number;
+  scannedAt: string;
+}
+
 // Secure Erase
 export type ShredMethodId = 'zero_1' | 'dod_3' | 'dod_7' | 'gutmann_35';
 
@@ -602,7 +615,7 @@ export interface DeskKleanAPI {
   onDiskScanProgress?: (callback: (progress: ScanProgressEvent) => void) => () => void;
 
   // Duplicate Finder
-  scanDuplicates: (config: DuplicateScanConfig) => Promise<DuplicateGroup[]>;
+  scanDuplicates: (config: DuplicateScanConfig) => Promise<DuplicateScanResult>;
   deleteDuplicateFiles: (fileIds: string[]) => Promise<{ success: boolean; deletedCount: number; freedBytes: number }>;
 
   // Secure Erase

@@ -20,6 +20,7 @@ import {
   BrowserType,
   DuplicateGroup,
   DuplicateScanConfig,
+  DuplicateScanResult,
   ShredMethodId,
   AppSettings,
   ActivityItem,
@@ -102,7 +103,7 @@ const api: DeskKleanAPI = {
   },
 
   // Duplicate Finder
-  scanDuplicates: (config: DuplicateScanConfig): Promise<DuplicateGroup[]> =>
+  scanDuplicates: (config: DuplicateScanConfig): Promise<DuplicateScanResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.DUPLICATES_SCAN, config),
   deleteDuplicateFiles: (fileIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.DUPLICATES_DELETE, fileIds),
 

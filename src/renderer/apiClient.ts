@@ -20,6 +20,7 @@ import {
   BrowserType,
   DuplicateGroup,
   DuplicateScanConfig,
+  DuplicateScanResult,
   ShredMethodId,
   AppSettings,
   ActivityItem,
@@ -711,64 +712,79 @@ const mockAPI: DeskKleanAPI = {
   onDiskScanProgress: () => () => {},
 
 
-  scanDuplicates: async (): Promise<DuplicateGroup[]> => [
-    {
-      hash: 'd41d8cd98f00b204e9800998ecf8427e',
-      fileName: 'Project_Assets_Final.zip',
-      sizeBytes: 1420000000,
-      wastedBytes: 1420000000,
-      files: [
-        {
-          id: 'dup-1',
-          path: 'C:\\Users\\User\\Documents\\Work\\Project_Assets_Final.zip',
-          name: 'Project_Assets_Final.zip',
-          sizeBytes: 1420000000,
-          hash: 'd41d8cd98f00b204e9800998ecf8427e',
-          lastModified: '2024-01-14',
-          selectedForDeletion: false,
-          isOriginal: true,
-        },
-        {
-          id: 'dup-2',
-          path: 'C:\\Users\\User\\Downloads\\Project_Assets_Final (1).zip',
-          name: 'Project_Assets_Final (1).zip',
-          sizeBytes: 1420000000,
-          hash: 'd41d8cd98f00b204e9800998ecf8427e',
-          lastModified: '2024-01-20',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-      ],
-    },
-    {
-      hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-      fileName: 'presentation_keynote_2024.mp4',
-      sizeBytes: 840000000,
-      wastedBytes: 1680000000,
-      files: [
-        {
-          id: 'dup-3',
-          path: 'C:\\Users\\User\\Videos\\presentation_keynote_2024.mp4',
-          name: 'presentation_keynote_2024.mp4',
-          sizeBytes: 840000000,
-          hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-          lastModified: '2024-02-01',
-          selectedForDeletion: false,
-          isOriginal: true,
-        },
-        {
-          id: 'dup-4',
-          path: 'C:\\Users\\User\\Downloads\\presentation_keynote_2024.mp4',
-          name: 'presentation_keynote_2024.mp4',
-          sizeBytes: 840000000,
-          hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-          lastModified: '2024-02-05',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-      ],
-    },
-  ],
+  scanDuplicates: async (): Promise<DuplicateScanResult> => {
+    const groups: DuplicateGroup[] = [
+      {
+        hash: 'd41d8cd98f00b204e9800998ecf8427e',
+        fileName: 'Project_Assets_Final.zip',
+        sizeBytes: 1420000000,
+        wastedBytes: 1420000000,
+        files: [
+          {
+            id: 'dup-1',
+            path: 'C:\\Users\\User\\Documents\\Work\\Project_Assets_Final.zip',
+            name: 'Project_Assets_Final.zip',
+            sizeBytes: 1420000000,
+            hash: 'd41d8cd98f00b204e9800998ecf8427e',
+            lastModified: '2024-01-14',
+            selectedForDeletion: false,
+            isOriginal: true,
+          },
+          {
+            id: 'dup-2',
+            path: 'C:\\Users\\User\\Downloads\\Project_Assets_Final (1).zip',
+            name: 'Project_Assets_Final (1).zip',
+            sizeBytes: 1420000000,
+            hash: 'd41d8cd98f00b204e9800998ecf8427e',
+            lastModified: '2024-01-20',
+            selectedForDeletion: true,
+            isOriginal: false,
+          },
+        ],
+      },
+      {
+        hash: 'e2fc714c4727ee9395f324cd2e7f331f',
+        fileName: 'presentation_keynote_2024.mp4',
+        sizeBytes: 840000000,
+        wastedBytes: 1680000000,
+        files: [
+          {
+            id: 'dup-3',
+            path: 'C:\\Users\\User\\Videos\\presentation_keynote_2024.mp4',
+            name: 'presentation_keynote_2024.mp4',
+            sizeBytes: 840000000,
+            hash: 'e2fc714c4727ee9395f324cd2e7f331f',
+            lastModified: '2024-02-01',
+            selectedForDeletion: false,
+            isOriginal: true,
+          },
+          {
+            id: 'dup-4',
+            path: 'C:\\Users\\User\\Downloads\\presentation_keynote_2024.mp4',
+            name: 'presentation_keynote_2024.mp4',
+            sizeBytes: 840000000,
+            hash: 'e2fc714c4727ee9395f324cd2e7f331f',
+            lastModified: '2024-02-05',
+            selectedForDeletion: true,
+            isOriginal: false,
+          },
+        ],
+      },
+    ];
+
+    return {
+      root: 'C:\\Users\\User',
+      scannedFileCount: 42,
+      skippedCount: 0,
+      belowMinSizeCount: 15,
+      duplicateGroupCount: groups.length,
+      duplicateFileCount: groups.reduce((acc, g) => acc + g.files.length, 0),
+      wastedBytes: groups.reduce((acc, g) => acc + g.wastedBytes, 0),
+      groups,
+      scanDurationMs: 420,
+      scannedAt: new Date().toISOString(),
+    };
+  },
 
   deleteDuplicateFiles: async (fileIds: string[]) => ({
     success: true,

@@ -91,13 +91,24 @@ size index never contains an out-of-root path in the first place.
 
 A hardlink is not a copy — it is a second directory entry for the same bytes.
 "Deleting a duplicate" that is a hardlink reclaims nothing and may break the
-link the user intended to keep. Hardlink detection uses PowerShell `Get-Item`'s
-`LinkType` property; files with a `HardLink` type are excluded from grouping.
+link the user intended to keep.
 
-> **UNVERIFIED:** The exact `LinkType` values returned by PowerShell `Get-Item`
-> for NTFS hardlinks were not confirmed on the target machine. The implementer
-> must verify the detection works and degrade gracefully — skip hardlink
-> detection with a logged warning rather than skipping legitimate duplicates.
+Detection uses **`fs.statSync().nlink > 1` as the primary mechanism**. The
+enumeration already stats every file to read its size, so this adds no syscalls
+and no process spawns. A per-file PowerShell `Get-Item` call is not viable:
+`powershell.exe` is a process spawn (~150-300 ms) each, and 100,000 files would
+mean 100,000 spawns — hours. PowerShell `Get-Item`'s `LinkType` is retained as
+the fallback **only** if `nlink` is unavailable or wrong on the target machine.
+
+The failure mode is why this matters, not just speed: if detection is skipped,
+two hardlinks to the same data are reported as duplicates; sending one to the
+Recycle Bin removes the directory entry but the data survives through the other
+link, so the user is told they freed space they did not.
+
+> **UNVERIFIED:** Whether Node's `Stats.nlink` is populated correctly for NTFS
+> hardlinks on the target machine. The implementer must verify it and fall back
+> to PowerShell `Get-Item` `LinkType` with a logged warning if it is not —
+> degrade to skipping hardlink detection rather than failing the scan.
 
 ### D-DF-7 — Never auto-select every copy ✅
 
@@ -121,7 +132,11 @@ group where the user must choose must show a prompt, not silently pick.
    same length. Lowercase comparison, full resolved path.
 3. **Earliest creation time** — tie-break when paths are identical in length
    and alphabetical order (possible on case-insensitive filesystems where the
-   same file appears via different cases).
+   same file appears via different cases). **Best-effort:** NTFS `birthtime`
+   can be 0, stale after a copy, or identical across many files. This rule is
+   reached only after the first two tie-breaks, so a wrong value can at worst
+   choose between two effectively equivalent copies. It is deterministic for a
+   given scan, which is what the keep-copy rule actually requires.
 4. **Deterministic first** — if all above are equal, the first in the
    enumerated order is kept. Arbitrary but stable.
 
@@ -201,6 +216,10 @@ interface DuplicateScanConfig {
 
 `matchBy: 'name-size'` is **not implemented** in Phase 10. It is a name-and-
 size heuristic that produces false positives. The UI does not offer it.
+
+A stored configuration may still pass `'name-size'`; the scan **coerces it to
+`'hash'` and logs a warning** rather than ignoring it. The user then gets the
+safe, exact-content mode instead of a scan that silently does nothing.
 
 ---
 
@@ -302,9 +321,11 @@ Rails:
 - Files are checked for the `ReparsePoint` attribute via PowerShell
   `Get-Item` (the existing system bridge). A file with the attribute set is
   skipped, not followed.
-- Hardlink detection uses `Get-Item`'s `LinkType`. Files with `HardLink` type
-  are skipped. If detection fails (access denied, property missing), log a
-  warning and continue without hardlink filtering — do not fail the scan.
+- Hardlink detection uses `fs.statSync().nlink > 1`, read from the stat the
+  enumeration already performs — no extra syscalls, no process spawns. A file
+  with `nlink > 1` is skipped. If `nlink` is unavailable or wrong, fall back to
+  PowerShell `Get-Item`'s `LinkType`; if that also fails, log a warning and
+  continue without hardlink filtering — do not fail the scan.
 - Files below the minimum size are counted, not indexed.
 - I/O errors on individual files are counted as skipped, not fatal.
 - The scan is read-only. It creates no files, writes no registry, and mutates
@@ -470,6 +491,6 @@ Windows acceptance, run by the owner:
 
 | # | Question | Blocks |
 |---|---|---|
-| OQ-DF-1 | The exact `LinkType` values PowerShell `Get-Item` returns for NTFS hardlinks were not confirmed. Does `Get-Item` reliably distinguish hardlinks on the target machine? | Hardlink detection (D-DF-6) |
+| OQ-DF-1 | ~~Does `Get-Item` reliably distinguish hardlinks?~~ **Narrowed:** the primary mechanism is now `fs.statSync().nlink > 1`. What remains unverified is whether Node populates `nlink` correctly for NTFS hardlinks on the target machine. PowerShell `Get-Item` `LinkType` is the fallback, and its exact values are still unconfirmed. | Hardlink detection (D-DF-6) |
 | OQ-DF-2 | What is the correct PowerShell/.NET API to send a file to the Recycle Bin programmatically? `SHFileOperation` and `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile` are candidates, but neither was verified. | Phase 11 execute |
 | OQ-DF-3 | What Recycle Bin capacity threshold should trigger a warning? A full Recycle Bin silently fails to accept new items. | Phase 11 execute |

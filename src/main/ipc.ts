@@ -27,6 +27,7 @@ import {
   BrowserExtension,
   DuplicateGroup,
   DuplicateScanConfig,
+  DuplicateScanResult,
   ShredMethodId,
   AppSettings,
   ActivityItem,
@@ -74,6 +75,7 @@ import {
   getLogicalDisks,
 } from './system/cim';
 import { walk } from './system/disk-analyzer';
+import { scanDuplicates } from './system/duplicate-finder';
 import { getDiskMeasurements, getGpuVram64BitMb } from './system/systemInfo';
 import {
   toNumber,
@@ -1208,107 +1210,22 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
 
-  // --- Duplicate File Finder ---
-  let duplicateGroups: DuplicateGroup[] = [
-    {
-      hash: 'd41d8cd98f00b204e9800998ecf8427e',
-      fileName: 'Project_Assets_Final.zip',
-      sizeBytes: 1420000000,
-      wastedBytes: 1420000000,
-      files: [
-        {
-          id: 'dup-1',
-          path: 'C:\\Users\\User\\Documents\\Work\\Project_Assets_Final.zip',
-          name: 'Project_Assets_Final.zip',
-          sizeBytes: 1420000000,
-          hash: 'd41d8cd98f00b204e9800998ecf8427e',
-          lastModified: '2024-01-14',
-          selectedForDeletion: false,
-          isOriginal: true,
-        },
-        {
-          id: 'dup-2',
-          path: 'C:\\Users\\User\\Downloads\\Project_Assets_Final (1).zip',
-          name: 'Project_Assets_Final (1).zip',
-          sizeBytes: 1420000000,
-          hash: 'd41d8cd98f00b204e9800998ecf8427e',
-          lastModified: '2024-01-20',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-      ],
-    },
-    {
-      hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-      fileName: 'presentation_keynote_2024.mp4',
-      sizeBytes: 840000000,
-      wastedBytes: 1680000000,
-      files: [
-        {
-          id: 'dup-3',
-          path: 'C:\\Users\\User\\Videos\\presentation_keynote_2024.mp4',
-          name: 'presentation_keynote_2024.mp4',
-          sizeBytes: 840000000,
-          hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-          lastModified: '2024-02-01',
-          selectedForDeletion: false,
-          isOriginal: true,
-        },
-        {
-          id: 'dup-4',
-          path: 'C:\\Users\\User\\Downloads\\presentation_keynote_2024.mp4',
-          name: 'presentation_keynote_2024.mp4',
-          sizeBytes: 840000000,
-          hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-          lastModified: '2024-02-05',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-        {
-          id: 'dup-5',
-          path: 'C:\\Users\\User\\Desktop\\New Folder\\presentation_copy.mp4',
-          name: 'presentation_copy.mp4',
-          sizeBytes: 840000000,
-          hash: 'e2fc714c4727ee9395f324cd2e7f331f',
-          lastModified: '2024-02-12',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-      ],
-    },
-    {
-      hash: '68b329da9893e34099c7d8ad5cb9c940',
-      fileName: 'invoice_march_2024.pdf',
-      sizeBytes: 12500000,
-      wastedBytes: 12500000,
-      files: [
-        {
-          id: 'dup-6',
-          path: 'C:\\Users\\User\\Documents\\Invoices\\invoice_march_2024.pdf',
-          name: 'invoice_march_2024.pdf',
-          sizeBytes: 12500000,
-          hash: '68b329da9893e34099c7d8ad5cb9c940',
-          lastModified: '2024-03-01',
-          selectedForDeletion: false,
-          isOriginal: true,
-        },
-        {
-          id: 'dup-7',
-          path: 'C:\\Users\\User\\Downloads\\invoice_march_2024(1).pdf',
-          name: 'invoice_march_2024(1).pdf',
-          sizeBytes: 12500000,
-          hash: '68b329da9893e34099c7d8ad5cb9c940',
-          lastModified: '2024-03-05',
-          selectedForDeletion: true,
-          isOriginal: false,
-        },
-      ],
-    },
-  ];
+  let duplicateGroups: DuplicateGroup[] = [];
 
-  ipcMain.handle(IPC_CHANNELS.DUPLICATES_SCAN, async (_, config: DuplicateScanConfig): Promise<DuplicateGroup[]> => {
-    return duplicateGroups;
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.DUPLICATES_SCAN,
+    async (_, config: DuplicateScanConfig): Promise<DuplicateScanResult> => {
+      const result = await scanDuplicates(config);
+      duplicateGroups = result.groups;
+      logActivity({
+        module: 'duplicate-finder',
+        title: 'Duplicates Scanned',
+        detail: `Found ${result.duplicateGroupCount} duplicate groups (${result.duplicateFileCount} files) in ${result.root}`,
+        type: 'info',
+      });
+      return result;
+    }
+  );
 
   ipcMain.handle(IPC_CHANNELS.DUPLICATES_DELETE, async (_, fileIds: string[]) => {
     let freed = 0;
