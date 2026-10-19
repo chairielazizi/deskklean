@@ -36,6 +36,18 @@ export interface RegistryExecutionRunners {
   backupDirOverride?: string;
 }
 
+export interface FileExecutionRunners {
+  isWindowsFn?: () => boolean;
+  isElevatedFn?: () => Promise<boolean>;
+  backupDirOverride?: string;
+  trashItemFn?: (target: string) => Promise<void>;
+  powershellRecycleFn?: (target: string, isDirectory: boolean) => Promise<void>;
+  unlinkFn?: (target: string) => Promise<void>;
+  rmDirFn?: (target: string) => Promise<void>;
+}
+
+export type ExecutionRunners = RegistryExecutionRunners & FileExecutionRunners;
+
 /**
  * Executes a planned destructive operation (such as restoring a registry backup).
  *
@@ -55,7 +67,7 @@ export async function executeOperationPlan(
     type: 'info' | 'success' | 'warning' | 'error';
     spaceFreedBytes?: number;
   }) => void,
-  runners?: RegistryExecutionRunners
+  runners?: ExecutionRunners
 ): Promise<ExecuteResult> {
   const plan = getOperationPlan(planId);
   if (!plan) {
@@ -128,7 +140,7 @@ export async function executeOperationPlan(
   );
 
   if (hasFileDeletions) {
-    return executeFileDeletions(plan, logActivity);
+    return executeFileDeletions(plan, logActivity, runners);
   }
 
   return {
@@ -150,12 +162,13 @@ export async function executeOperationPlan(
  * 4. Logs confirmed outcome to activity log.
  * 5. Returns partial-failure aware ExecuteResult.
  */
-async function executeFileDeletions(
+export async function executeFileDeletions(
   plan: import('./types').OperationPlan,
-  logActivity?: (item: any) => void
+  logActivity?: (item: any) => void,
+  runners?: FileExecutionRunners
 ): Promise<ExecuteResult> {
   // 1. Write backup manifest before first destructive call (Phase 3 rail)
-  const backupDir = getModuleBackupDir(plan.module);
+  const backupDir = runners?.backupDirOverride ?? getModuleBackupDir(plan.module);
   const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const manifestPath = path.join(backupDir, `${isoTimestamp}-manifest.json`);
 
@@ -266,27 +279,78 @@ async function executeFileDeletions(
     try {
       if (deletionMethod === 'recycle-bin') {
         let trashSuccess = false;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const electron = require('electron');
-          if (electron?.shell?.trashItem) {
-            await electron.shell.trashItem(action.target);
-            trashSuccess = true;
-          }
-        } catch {}
 
+        // Primary: electron.shell.trashItem (native C++ via COM IFileOperation, 0 process spawns)
+        try {
+          if (runners?.trashItemFn) {
+            await runners.trashItemFn(action.target);
+            trashSuccess = true;
+          } else {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const electron = require('electron');
+            if (electron?.shell?.trashItem) {
+              await electron.shell.trashItem(action.target);
+              trashSuccess = true;
+            }
+          }
+        } catch {
+          trashSuccess = false;
+        }
+
+        // Fallback: PowerShell [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile
+        // with UIOption.OnlyErrorDialogs and RecycleOption.SendToRecycleBin (OQ-DF-2)
         if (!trashSuccess) {
-          await fs.promises.unlink(action.target);
+          try {
+            if (runners?.powershellRecycleFn) {
+              const isDir =
+                fs.existsSync(action.target) &&
+                (await fs.promises.stat(action.target)).isDirectory();
+              await runners.powershellRecycleFn(action.target, isDir);
+              trashSuccess = true;
+            } else {
+              const isDir =
+                fs.existsSync(action.target) &&
+                (await fs.promises.stat(action.target)).isDirectory();
+              const psMethod = isDir ? 'DeleteDirectory' : 'DeleteFile';
+              const escapedPath = action.target.replace(/'/g, "''");
+              const psScript = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::${psMethod}('${escapedPath}', [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs, [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin)`;
+              await runPowerShell(psScript);
+              trashSuccess = true;
+            }
+          } catch {
+            trashSuccess = false;
+          }
+        }
+
+        // BINDING RAIL: NEVER call unlink() when deletionMethod === 'recycle-bin'.
+        // If both primary trashItem and PowerShell fallback fail, the operation fails closed.
+        if (!trashSuccess) {
+          throw new Error(
+            'Failed to send item to Recycle Bin (both trashItem and PowerShell fallback failed)'
+          );
         }
       } else {
+        // Permanent deletion (only when deletionMethod !== 'recycle-bin')
         if (action.kind === 'delete-file') {
-          await fs.promises.unlink(action.target);
+          if (runners?.unlinkFn) {
+            await runners.unlinkFn(action.target);
+          } else {
+            await fs.promises.unlink(action.target);
+          }
         } else if (action.kind === 'delete-tree') {
           const stat = await fs.promises.stat(action.target);
           if (stat.isDirectory()) {
-            await fs.promises.rm(action.target, { recursive: true, force: true });
+            if (runners?.rmDirFn) {
+              await runners.rmDirFn(action.target);
+            } else {
+              await fs.promises.rm(action.target, { recursive: true, force: true });
+            }
           } else {
-            await fs.promises.unlink(action.target);
+            if (runners?.unlinkFn) {
+              await runners.unlinkFn(action.target);
+            } else {
+              await fs.promises.unlink(action.target);
+            }
           }
         }
       }

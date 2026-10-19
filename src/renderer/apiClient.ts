@@ -786,10 +786,32 @@ const mockAPI: DeskKleanAPI = {
     };
   },
 
-  deleteDuplicateFiles: async (fileIds: string[]) => ({
+  deleteDuplicateFiles: async (fileIds: string[]): Promise<ExecuteResult> => ({
     success: true,
-    deletedCount: fileIds.length,
-    freedBytes: fileIds.length * 840000000,
+    completed: fileIds.length,
+    failed: 0,
+    skipped: 0,
+    reclaimableBytes: fileIds.length * 840000000,
+    failures: [],
+    backupPath: 'C:\\Users\\User\\AppData\\Roaming\\DeskKlean\\backups\\duplicate-finder\\2026-10-18T07-00-00-000Z-manifest.json',
+    message: `Successfully moved ${fileIds.length} duplicate files to Recycle Bin.`,
+  }),
+  planDuplicateDelete: async (fileIds?: string[]): Promise<OperationPlan> => ({
+    id: `plan-dup-${Date.now()}`,
+    module: 'duplicate-finder',
+    actions: (fileIds || []).map((id) => ({
+      id,
+      kind: 'delete-file',
+      target: `C:\\Users\\User\\Downloads\\dup-${id}.zip`,
+      description: `Move duplicate to Recycle Bin`,
+      reclaimableBytes: 840000000,
+      metadata: { deletionMethod: 'recycle-bin' },
+    })),
+    blocked: [],
+    totalReclaimableBytes: (fileIds || []).length * 840000000,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
   }),
 
   shredItems: async (paths: string[], methodId: ShredMethodId) => ({

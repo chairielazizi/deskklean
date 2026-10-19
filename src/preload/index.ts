@@ -105,7 +105,10 @@ const api: DeskKleanAPI = {
   // Duplicate Finder
   scanDuplicates: (config: DuplicateScanConfig): Promise<DuplicateScanResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.DUPLICATES_SCAN, config),
-  deleteDuplicateFiles: (fileIds: string[]) => ipcRenderer.invoke(IPC_CHANNELS.DUPLICATES_DELETE, fileIds),
+  deleteDuplicateFiles: (fileIds: string[]): Promise<ExecuteResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.DUPLICATES_DELETE, fileIds),
+  planDuplicateDelete: (fileIds?: string[]): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'duplicate-finder', { fileIds }),
 
   // Secure Erase
   shredItems: (paths: string[], methodId: ShredMethodId) =>

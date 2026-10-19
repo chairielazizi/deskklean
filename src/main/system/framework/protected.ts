@@ -65,7 +65,10 @@ export function getSystemPaths(): {
 /**
  * Returns the unconditionally protected paths list.
  */
-export function getProtectedPaths(customExcludedPaths: string[] = []): string[] {
+export function getProtectedPaths(
+  customExcludedPaths: string[] = [],
+  options?: { allowUserData?: boolean }
+): string[] {
   const sys = getSystemPaths();
 
   const protectedRoots = [
@@ -83,12 +86,15 @@ export function getProtectedPaths(customExcludedPaths: string[] = []): string[] 
     path.join(sys.systemDrive, 'bootmgr'),
     path.join(sys.systemDrive, 'BOOTNXT'),
     path.join(sys.systemDrive, 'EFI'),
-    // User documents
-    path.join(sys.userProfile, 'Documents'),
-    path.join(sys.userProfile, 'Desktop'),
-    path.join(sys.userProfile, 'Pictures'),
-    path.join(sys.userProfile, 'Videos'),
-    path.join(sys.userProfile, 'Music'),
+    ...(options?.allowUserData
+      ? []
+      : [
+          path.join(sys.userProfile, 'Documents'),
+          path.join(sys.userProfile, 'Desktop'),
+          path.join(sys.userProfile, 'Pictures'),
+          path.join(sys.userProfile, 'Videos'),
+          path.join(sys.userProfile, 'Music'),
+        ]),
     ...customExcludedPaths,
   ];
 
@@ -147,6 +153,7 @@ export function validatePath(
     backupDir?: string;
     appDir?: string;
     allowNonExistent?: boolean;
+    allowUserData?: boolean;
   } = {}
 ): PathValidationResult {
   // 1. String, non-empty, absolute
@@ -226,9 +233,9 @@ export function validatePath(
   }
 
   // 5. Check unconditionally protected list
-  const protectedPaths = getProtectedPaths(options.customExcludedPaths).map(
-    normalizePathForComparison
-  );
+  const protectedPaths = getProtectedPaths(options.customExcludedPaths, {
+    allowUserData: options.allowUserData,
+  }).map(normalizePathForComparison);
 
   for (const prot of protectedPaths) {
     // Exact match or subpath match

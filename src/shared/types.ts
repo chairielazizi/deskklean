@@ -616,7 +616,8 @@ export interface DeskKleanAPI {
 
   // Duplicate Finder
   scanDuplicates: (config: DuplicateScanConfig) => Promise<DuplicateScanResult>;
-  deleteDuplicateFiles: (fileIds: string[]) => Promise<{ success: boolean; deletedCount: number; freedBytes: number }>;
+  deleteDuplicateFiles: (fileIds: string[]) => Promise<ExecuteResult>;
+  planDuplicateDelete?: (fileIds?: string[]) => Promise<OperationPlan>;
 
   // Secure Erase
   shredItems: (paths: string[], methodId: ShredMethodId) => Promise<{ success: boolean; shreddedCount: number }>;

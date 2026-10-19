@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../apiClient';
-import { DuplicateGroup, DuplicateScanConfig, DuplicateScanResult } from '../../shared/types';
+import {
+  DuplicateGroup,
+  DuplicateFile,
+  DuplicateScanConfig,
+  DuplicateScanResult,
+} from '../../shared/types';
 import { formatBytes } from '../utils/format';
 import {
   Copy,
@@ -13,7 +18,16 @@ import {
   Settings,
   ShieldCheck,
   Clock,
+  X,
+  AlertTriangle,
+  CheckCircle,
 } from 'lucide-react';
+
+interface ModalGroupSelection {
+  group: DuplicateGroup;
+  keepCopy: DuplicateFile;
+  filesToDelete: DuplicateFile[];
+}
 
 export const DuplicateFinder: React.FC = () => {
   const [scanResult, setScanResult] = useState<DuplicateScanResult | null>(null);
@@ -28,29 +42,105 @@ export const DuplicateFinder: React.FC = () => {
   });
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
+  // Confirmation modal state (Phase 11 Rail)
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [modalGroups, setModalGroups] = useState<ModalGroupSelection[]>([]);
+  const [notification, setNotification] = useState<{
+    type: 'success' | 'warning' | 'error';
+    message: string;
+  } | null>(null);
+
   const runScan = async () => {
     setIsScanning(true);
+    setNotification(null);
     try {
       const result = await api.scanDuplicates(scanConfig);
       setScanResult(result);
       setGroups(result.groups);
     } catch (e) {
       console.error('Duplicate scan failed:', e);
+      setNotification({
+        type: 'error',
+        message: `Duplicate scan failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
     setIsScanning(false);
   };
 
-  const handleDelete = async (group: DuplicateGroup) => {
-    // Phase 10: UI selection guards enforce keep-copy is preserved and not all copies can be deleted
-    const filesToDelete = group.files.filter((f) => f.selectedForDeletion && !f.isOriginal);
-    if (filesToDelete.length === 0 || filesToDelete.length >= group.files.length) return;
+  const openConfirmModal = (targetGroup?: DuplicateGroup) => {
+    if (targetGroup) {
+      const keep = targetGroup.files.find((f) => f.isOriginal) || targetGroup.files[0];
+      const filesToDelete = targetGroup.files.filter((f) => f.selectedForDeletion && !f.isOriginal);
+      if (filesToDelete.length === 0) return;
+      setModalGroups([{ group: targetGroup, keepCopy: keep, filesToDelete }]);
+    } else {
+      const selections: ModalGroupSelection[] = [];
+      for (const group of groups) {
+        const keep = group.files.find((f) => f.isOriginal) || group.files[0];
+        const filesToDelete = group.files.filter((f) => f.selectedForDeletion && !f.isOriginal);
+        if (filesToDelete.length > 0) {
+          selections.push({ group, keepCopy: keep, filesToDelete });
+        }
+      }
+      if (selections.length === 0) return;
+      setModalGroups(selections);
+    }
+    setShowConfirmModal(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    const allFilesToDelete = modalGroups.flatMap((mg) => mg.filesToDelete);
+    if (allFilesToDelete.length === 0) return;
 
     setIsDeleting(true);
     try {
-      await api.deleteDuplicateFiles(filesToDelete.map((f) => f.id));
-      setGroups((prev) => prev.filter((g) => g.hash !== group.hash));
+      const targetIds = new Set(allFilesToDelete.map((f) => f.id));
+      const result = await api.deleteDuplicateFiles(allFilesToDelete.map((f) => f.id));
+
+      if (result.completed > 0) {
+        const failedTargets = new Set((result.failures || []).map((f) => f.target.toLowerCase()));
+        setGroups((prev) =>
+          prev
+            .map((g) => {
+              const remainingFiles = g.files.filter((f) => {
+                if (targetIds.has(f.id) && !failedTargets.has(f.path.toLowerCase())) {
+                  return false;
+                }
+                return true;
+              });
+              return {
+                ...g,
+                files: remainingFiles,
+                wastedBytes: Math.max(0, (remainingFiles.length - 1) * g.sizeBytes),
+              };
+            })
+            .filter((g) => g.files.length > 1)
+        );
+
+        if (result.success) {
+          setNotification({
+            type: 'success',
+            message: `Successfully moved ${result.completed} duplicate file${result.completed === 1 ? '' : 's'} to the Recycle Bin.`,
+          });
+        } else {
+          setNotification({
+            type: 'warning',
+            message: `Partially completed: ${result.completed} files moved to Recycle Bin, ${result.failed} failed.`,
+          });
+        }
+      } else {
+        setNotification({
+          type: 'error',
+          message: `Deletion failed: ${result.failures?.[0]?.error || result.message || 'Unknown error'}`,
+        });
+      }
+      setShowConfirmModal(false);
     } catch (e) {
       console.error('Delete failed:', e);
+      setNotification({
+        type: 'error',
+        message: `Deletion failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
     setIsDeleting(false);
   };
@@ -111,6 +201,26 @@ export const DuplicateFinder: React.FC = () => {
 
   const totalWasted = groups.reduce((sum, g) => sum + g.wastedBytes, 0);
 
+  const totalSelectedFiles = groups.reduce(
+    (sum, g) => sum + g.files.filter((f) => f.selectedForDeletion && !f.isOriginal).length,
+    0
+  );
+
+  const totalSelectedBytes = groups.reduce(
+    (sum, g) =>
+      sum +
+      g.files
+        .filter((f) => f.selectedForDeletion && !f.isOriginal)
+        .reduce((s, f) => s + f.sizeBytes, 0),
+    0
+  );
+
+  const modalTotalFiles = modalGroups.reduce((sum, mg) => sum + mg.filesToDelete.length, 0);
+  const modalTotalBytes = modalGroups.reduce(
+    (sum, mg) => sum + mg.filesToDelete.reduce((s, f) => s + f.sizeBytes, 0),
+    0
+  );
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -121,15 +231,58 @@ export const DuplicateFinder: React.FC = () => {
             Find and review exact content duplicate files (SHA-256 verified)
           </p>
         </div>
-        <button
-          onClick={runScan}
-          disabled={isScanning}
-          className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white font-bold text-sm shadow-lg transition-all disabled:opacity-50"
-        >
-          {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-          {isScanning ? 'Scanning...' : 'Scan for Duplicates'}
-        </button>
+        <div className="flex items-center gap-3">
+          {totalSelectedFiles > 0 && (
+            <button
+              onClick={() => openConfirmModal()}
+              disabled={isDeleting || totalSelectedFiles === 0}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-bold text-sm border border-rose-500/40 shadow-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Trash2 className="w-4 h-4 text-rose-400" />
+              Delete {totalSelectedFiles} Selected ({formatBytes(totalSelectedBytes)})
+            </button>
+          )}
+          <button
+            onClick={runScan}
+            disabled={isScanning}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white font-bold text-sm shadow-lg transition-all disabled:opacity-50"
+          >
+            {isScanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {isScanning ? 'Scanning...' : 'Scan for Duplicates'}
+          </button>
+        </div>
       </div>
+
+      {/* Notification Banner */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className={`p-4 rounded-xl flex items-center justify-between border ${
+              notification.type === 'success'
+                ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                : notification.type === 'warning'
+                ? 'bg-amber-950/40 border-amber-500/40 text-amber-200'
+                : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+            }`}
+          >
+            <div className="flex items-center gap-3 text-sm">
+              {notification.type === 'success' && <CheckCircle className="w-5 h-5 text-emerald-400 flex-shrink-0" />}
+              {notification.type === 'warning' && <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />}
+              {notification.type === 'error' && <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0" />}
+              <span>{notification.message}</span>
+            </div>
+            <button
+              onClick={() => setNotification(null)}
+              className="p-1 rounded-lg hover:bg-slate-800/50 text-slate-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Config & Metrics Summary */}
       <motion.div
@@ -213,18 +366,18 @@ export const DuplicateFinder: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
-                    {/* Delete button is disabled when no valid selection exists (D-DF-7) */}
+                    {/* Delete button opens confirmation modal, disabled when no valid selection exists (D-DF-7) */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         if (hasValidSelection) {
-                          handleDelete(group);
+                          openConfirmModal(group);
                         }
                       }}
                       disabled={isDeleting || !hasValidSelection}
                       className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-medium border border-rose-500/30 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                     >
-                      {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                      <Trash2 className="w-3 h-3" />
                       Delete {selectedCount}
                     </button>
                     <button
@@ -290,6 +443,139 @@ export const DuplicateFinder: React.FC = () => {
           })}
         </div>
       )}
+
+      {/* Confirmation Modal (Phase 11 Rail) */}
+      <AnimatePresence>
+        {showConfirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="relative w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden"
+            >
+              {/* Modal Header */}
+              <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <Trash2 className="w-5 h-5 text-rose-500" />
+                    Confirm Duplicate Deletion
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Review preserved originals and files scheduled for removal.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowConfirmModal(false)}
+                  disabled={isDeleting}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors disabled:opacity-40"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-6 overflow-y-auto space-y-4 text-sm flex-1">
+                {/* Reversible Safety Rail: Names the Recycle Bin as the reversible mechanism */}
+                <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-200 space-y-1.5">
+                  <div className="flex items-center gap-2 font-bold text-blue-300">
+                    <ShieldCheck className="w-4 h-4 flex-shrink-0 text-blue-400" />
+                    Reversible Deletion Mechanism: Windows Recycle Bin
+                  </div>
+                  <p className="leading-relaxed">
+                    Selected duplicates will be moved to the <strong>Windows Recycle Bin</strong> (never permanently destroyed).
+                    You can restore them from the Recycle Bin if needed. A JSON backup manifest will be written before execution.
+                  </p>
+                </div>
+
+                {/* Groups and files preview */}
+                <div className="space-y-4">
+                  {modalGroups.map(({ group, keepCopy, filesToDelete }) => (
+                    <div
+                      key={group.hash}
+                      className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3"
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-200">{group.fileName}</span>
+                        <span className="text-slate-400 font-mono">
+                          {formatBytes(group.sizeBytes)} each
+                        </span>
+                      </div>
+
+                      {/* Shows keep-copy path verbatim */}
+                      <div className="p-3 rounded-lg bg-emerald-950/30 border border-emerald-500/30 space-y-1">
+                        <div className="text-[11px] font-bold text-emerald-400 flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                          Preserved Original (Keep-Copy):
+                        </div>
+                        <p className="text-xs font-mono text-emerald-200 break-all select-all pl-5">
+                          {keepCopy.path}
+                        </p>
+                      </div>
+
+                      {/* Shows the paths to be deleted */}
+                      <div className="p-3 rounded-lg bg-rose-950/20 border border-rose-500/20 space-y-1.5">
+                        <div className="text-[11px] font-bold text-rose-400 flex items-center gap-1.5">
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400 flex-shrink-0" />
+                          Moving to Recycle Bin ({filesToDelete.length} {filesToDelete.length === 1 ? 'copy' : 'copies'}):
+                        </div>
+                        <div className="space-y-1 pl-5">
+                          {filesToDelete.map((f) => (
+                            <p
+                              key={f.id}
+                              className="text-xs font-mono text-rose-200 break-all select-all"
+                            >
+                              {f.path}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-6 border-t border-slate-800 flex items-center justify-between bg-slate-950/40">
+                <div className="text-xs text-slate-400">
+                  Total reclaimable:{' '}
+                  <span className="font-semibold text-slate-200 font-mono">
+                    {formatBytes(modalTotalBytes)}
+                  </span>{' '}
+                  ({modalTotalFiles} file{modalTotalFiles === 1 ? '' : 's'})
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowConfirmModal(false)}
+                    disabled={isDeleting}
+                    className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                  {/* Delete button is disabled when no valid selection exists */}
+                  <button
+                    onClick={handleConfirmDelete}
+                    disabled={isDeleting || modalTotalFiles === 0}
+                    className="flex items-center gap-2 px-5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-900/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Recycling...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Move to Recycle Bin ({modalTotalFiles})
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

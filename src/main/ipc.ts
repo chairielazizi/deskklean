@@ -75,7 +75,7 @@ import {
   getLogicalDisks,
 } from './system/cim';
 import { walk } from './system/disk-analyzer';
-import { scanDuplicates } from './system/duplicate-finder';
+import { scanDuplicates, createDuplicateDeletePlan } from './system/duplicate-finder';
 import { getDiskMeasurements, getGpuVram64BitMb } from './system/systemInfo';
 import {
   toNumber,
@@ -957,6 +957,20 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       const issues = options?.issues || (await scanRegistryFixer()).issues;
       return createRegistryFixPlan(issues, options?.selectedIssueIds, options);
     }
+    if (module === 'duplicate-finder' || module === 'duplicates') {
+      const scanRes =
+        options?.scanResult ||
+        lastDuplicateScanResult ||
+        (duplicateGroups.length > 0 ? { groups: duplicateGroups, root: '' } : null);
+      if (!scanRes) {
+        throw new Error('No duplicate scan result available to create plan');
+      }
+      return createDuplicateDeletePlan(
+        scanRes,
+        options?.fileIds || options?.selectedFileIds,
+        options
+      );
+    }
     throw new Error(`Module ${module} is not implemented in framework yet`);
   });
 
@@ -1211,12 +1225,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
 
   let duplicateGroups: DuplicateGroup[] = [];
+  let lastDuplicateScanResult: DuplicateScanResult | null = null;
 
   ipcMain.handle(
     IPC_CHANNELS.DUPLICATES_SCAN,
     async (_, config: DuplicateScanConfig): Promise<DuplicateScanResult> => {
       const result = await scanDuplicates(config);
       duplicateGroups = result.groups;
+      lastDuplicateScanResult = result;
       logActivity({
         module: 'duplicate-finder',
         title: 'Duplicates Scanned',
@@ -1227,36 +1243,98 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
-  ipcMain.handle(IPC_CHANNELS.DUPLICATES_DELETE, async (_, fileIds: string[]) => {
-    let freed = 0;
-    let count = 0;
+  ipcMain.handle(
+    IPC_CHANNELS.DUPLICATES_DELETE,
+    async (
+      _,
+      options: string[] | { fileIds?: string[]; scanResult?: DuplicateScanResult }
+    ): Promise<ExecuteResult> => {
+      let fileIds: string[] | undefined;
+      let scanResult: DuplicateScanResult | null = null;
 
-    duplicateGroups = duplicateGroups.map((group) => {
-      const remainingFiles = group.files.filter((f) => {
-        if (fileIds.includes(f.id)) {
-          freed += f.sizeBytes;
-          count++;
-          return false;
+      if (Array.isArray(options)) {
+        fileIds = options;
+      } else if (options && typeof options === 'object') {
+        fileIds = options.fileIds;
+        scanResult = options.scanResult || null;
+      }
+
+      const currentScan =
+        scanResult ||
+        lastDuplicateScanResult ||
+        (duplicateGroups.length > 0 ? { groups: duplicateGroups, root: '' } : null);
+
+      if (!currentScan) {
+        return {
+          success: false,
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          reclaimableBytes: null,
+          failures: [
+            {
+              target: 'duplicate-finder',
+              error: 'No scan results available to plan deletion',
+            },
+          ],
+          message: 'No scan results available to plan deletion.',
+        };
+      }
+
+      // 1. FRAMEWORK_PLAN: Convert scan result + selected duplicate files to OperationPlan
+      const plan = createDuplicateDeletePlan(currentScan, fileIds);
+
+      if (plan.actions.length === 0) {
+        return {
+          success: false,
+          completed: 0,
+          failed: 0,
+          skipped: 0,
+          reclaimableBytes: null,
+          failures: [],
+          message: 'No valid duplicate files selected for deletion.',
+        };
+      }
+
+      // 2. FRAMEWORK_EXECUTE: Execute through framework pipeline
+      const result = await executeOperationPlan(plan.id, (item) => logActivity(item as any));
+
+      // 3. Update in-memory groups if deletion succeeded (or partially succeeded)
+      if (result.completed > 0) {
+        const failedTargets = new Set(result.failures.map((f) => f.target.toLowerCase()));
+        const deletedTargets = new Set(
+          plan.actions
+            .filter((a) => !failedTargets.has(a.target.toLowerCase()))
+            .map((a) => a.target.toLowerCase())
+        );
+
+        duplicateGroups = duplicateGroups
+          .map((group) => {
+            const remainingFiles = group.files.filter(
+              (f) => !deletedTargets.has(f.path.toLowerCase())
+            );
+            return {
+              ...group,
+              files: remainingFiles,
+              wastedBytes: Math.max(0, (remainingFiles.length - 1) * group.sizeBytes),
+            };
+          })
+          .filter((g) => g.files.length > 1);
+
+        if (lastDuplicateScanResult) {
+          lastDuplicateScanResult = {
+            ...lastDuplicateScanResult,
+            groups: duplicateGroups,
+            duplicateGroupCount: duplicateGroups.length,
+            duplicateFileCount: duplicateGroups.reduce((acc, g) => acc + g.files.length, 0),
+            wastedBytes: duplicateGroups.reduce((acc, g) => acc + g.wastedBytes, 0),
+          };
         }
-        return true;
-      });
-      return {
-        ...group,
-        files: remainingFiles,
-        wastedBytes: Math.max(0, (remainingFiles.length - 1) * group.sizeBytes),
-      };
-    }).filter((g) => g.files.length > 1);
+      }
 
-    logActivity({
-      module: 'duplicate-finder',
-      title: 'Duplicates Cleaned',
-      detail: `Deleted ${count} duplicate files`,
-      type: 'success',
-      spaceFreedBytes: freed,
-    });
-
-    return { success: true, deletedCount: count, freedBytes: freed };
-  });
+      return result;
+    }
+  );
 
   // --- Secure Erase ---
   ipcMain.handle(IPC_CHANNELS.SHRED_ITEMS, async (_, paths: string[], methodId: ShredMethodId) => {

@@ -13,12 +13,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let duplicateFinderModule;
 
+let frameworkModule;
+
 try {
   duplicateFinderModule = require('../dist/main/system/duplicate-finder/index.js');
+  frameworkModule = require('../dist/main/system/framework/index.js');
 } catch {
   const { execSync } = require('child_process');
   execSync('npm run build:main', { cwd: path.resolve(__dirname, '..'), stdio: 'inherit' });
   duplicateFinderModule = require('../dist/main/system/duplicate-finder/index.js');
+  frameworkModule = require('../dist/main/system/framework/index.js');
 }
 
 const {
@@ -28,9 +32,13 @@ const {
   computePartialHash,
   isHardlink,
   scanDuplicates,
+  createDuplicateDeletePlan,
+  executeDuplicateDelete,
   DEFAULT_PARTIAL_HASH_THRESHOLD_BYTES,
   DEFAULT_HASH_WINDOW_BYTES,
 } = duplicateFinderModule;
+
+const { executeFileDeletions, validatePath } = frameworkModule;
 
 let failedCount = 0;
 let passedCount = 0;
@@ -450,6 +458,387 @@ async function runTests() {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   } catch {}
 
+  console.log('\n=== Section 9: Framework Plan Construction & Keep-Copy Protection (Phase 11) ===\n');
+
+  // Create temporary fixture files on disk for plan & execution tests
+  const phase11Tmp = path.join(os.tmpdir(), `deskklean-dup11-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+  fs.mkdirSync(phase11Tmp, { recursive: true });
+
+  const keepCopyFile = path.join(phase11Tmp, 'original.bin');
+  const duplicateFile1 = path.join(phase11Tmp, 'duplicate1.bin');
+  const duplicateFile2 = path.join(phase11Tmp, 'duplicate2.bin');
+
+  fs.writeFileSync(keepCopyFile, Buffer.alloc(1024 * 1024, 0x11));
+  fs.writeFileSync(duplicateFile1, Buffer.alloc(1024 * 1024, 0x11));
+  fs.writeFileSync(duplicateFile2, Buffer.alloc(1024 * 1024, 0x11));
+
+  const mockGroup = {
+    hash: 'mockhash123',
+    fileName: 'original.bin',
+    sizeBytes: 1024 * 1024,
+    wastedBytes: 2 * 1024 * 1024,
+    files: [
+      {
+        id: 'file-keep',
+        path: keepCopyFile,
+        name: 'original.bin',
+        sizeBytes: 1024 * 1024,
+        hash: 'mockhash123',
+        lastModified: new Date().toISOString(),
+        selectedForDeletion: false,
+        isOriginal: true,
+      },
+      {
+        id: 'file-dup-1',
+        path: duplicateFile1,
+        name: 'duplicate1.bin',
+        sizeBytes: 1024 * 1024,
+        hash: 'mockhash123',
+        lastModified: new Date().toISOString(),
+        selectedForDeletion: true,
+        isOriginal: false,
+      },
+      {
+        id: 'file-dup-2',
+        path: duplicateFile2,
+        name: 'duplicate2.bin',
+        sizeBytes: 1024 * 1024,
+        hash: 'mockhash123',
+        lastModified: new Date().toISOString(),
+        selectedForDeletion: true,
+        isOriginal: false,
+      },
+    ],
+  };
+
+  const mockScanResult = {
+    root: phase11Tmp,
+    scannedFileCount: 3,
+    skippedCount: 0,
+    belowMinSizeCount: 0,
+    duplicateGroupCount: 1,
+    duplicateFileCount: 3,
+    wastedBytes: 2 * 1024 * 1024,
+    groups: [mockGroup],
+    scanDurationMs: 10,
+    scannedAt: new Date().toISOString(),
+  };
+
+  // 9a-c. Rail: The keep-copy is NEVER a deletion target even if selected by the caller
+  const planWithKeepSelected = createDuplicateDeletePlan(mockScanResult, ['file-keep', 'file-dup-1']);
+  assert(
+    !planWithKeepSelected.actions.some((a) => a.target === keepCopyFile || a.id === 'file-keep'),
+    '9a. Keep-copy is never emitted as a deletion action even when explicitly requested'
+  );
+  assert(
+    planWithKeepSelected.blocked.some(
+      (b) => b.target === keepCopyFile && b.reason.toLowerCase().includes('keep-copy')
+    ),
+    '9b. Keep-copy exclusion is recorded in blocked list with explanatory reason'
+  );
+  assert(
+    planWithKeepSelected.actions.some((a) => a.target === duplicateFile1),
+    '9c. Non-keep duplicate copy is successfully included in planned actions'
+  );
+
+  // 9d. Rail: The plan contains ONLY files from the scan, never unknown files
+  const planWithUnknownFiles = createDuplicateDeletePlan(mockScanResult, ['unrecognized-id', 'file-dup-1']);
+  assert(
+    planWithUnknownFiles.actions.length === 1 && planWithUnknownFiles.actions[0].id === 'file-dup-1',
+    '9d. Plan includes only files verified to exist in scan; unknown IDs ignored'
+  );
+
+  // 9e. Plan reversibility is 'reversible'
+  assert(
+    planWithKeepSelected.reversibility === 'reversible',
+    '9e. Plan reversibility is declared as reversible (D-R2-4)'
+  );
+
+  // 9f. Action deletionMethod is always 'recycle-bin' (never 'permanent')
+  assert(
+    planWithKeepSelected.actions.every((a) => a.metadata?.deletionMethod === 'recycle-bin'),
+    '9f. deletionMethod in action metadata is strictly "recycle-bin"'
+  );
+
+  // 9g. reclaimableBytes is exact sum from scan
+  assert(
+    planWithKeepSelected.totalReclaimableBytes === 1024 * 1024,
+    '9g. totalReclaimableBytes is exact sum of selected files (never estimated)'
+  );
+
+  // 9h. Selecting keep-copy alone results in zero actions
+  const planKeepOnly = createDuplicateDeletePlan(mockScanResult, ['file-keep']);
+  assert(
+    planKeepOnly.actions.length === 0,
+    '9h. Selecting keep-copy alone produces 0 deletion actions'
+  );
+
+  console.log('\n=== Section 10: Path Validation & 2nd Line of Defense (Phase 11) ===\n');
+
+  // 10a. Framework path validation blocks keep-copy if passed as customExcludedPaths
+  const valKeepCheck = validatePath(keepCopyFile, {
+    customExcludedPaths: [keepCopyFile],
+    allowUserData: true,
+  });
+  assert(
+    valKeepCheck.allowed === false,
+    '10a. Framework path validation refuses keep-copy path as 2nd line of defense'
+  );
+
+  // 10b. File escaping scan root is refused
+  const outsideRootTmp = path.join(os.tmpdir(), `deskclean-outside-${Date.now()}`);
+  fs.mkdirSync(outsideRootTmp, { recursive: true });
+  const outsideFile = path.join(outsideRootTmp, 'outside.bin');
+  fs.writeFileSync(outsideFile, Buffer.alloc(1024, 0x22));
+
+  const valOutsideCheck = validatePath(outsideFile, {
+    scanRoot: phase11Tmp,
+    allowUserData: true,
+  });
+  assert(
+    valOutsideCheck.allowed === false && valOutsideCheck.reason.includes('escapes declared scan root'),
+    '10b. File escaping declared scanRoot is refused by path validation'
+  );
+
+  console.log('\n=== Section 11: The unlink() Guard & Recycle Fail-Closed Rail (Phase 11) ===\n');
+
+  const tmpBackupDir = path.join(phase11Tmp, 'backups');
+  fs.mkdirSync(tmpBackupDir, { recursive: true });
+
+  // 11a-e. BINDING RAIL: when trashItem fails and deletionMethod === 'recycle-bin',
+  // unlink() is NEVER called. If PowerShell also fails, the operation fails closed.
+  let unlinkCalled = false;
+  let trashItemCalled = false;
+  let powershellCalled = false;
+
+  const testFileGuard = path.join(phase11Tmp, 'unlink_guard_test.bin');
+  fs.writeFileSync(testFileGuard, Buffer.alloc(1024, 0x33));
+
+  const planUnlinkGuard = {
+    id: `plan-guard-${Date.now()}`,
+    module: 'duplicate-finder',
+    actions: [
+      {
+        id: 'guard-action',
+        kind: 'delete-file',
+        target: testFileGuard,
+        description: 'Test unlink guard',
+        reclaimableBytes: 1024,
+        metadata: { deletionMethod: 'recycle-bin' },
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: 1024,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const resUnlinkGuard = await executeFileDeletions(planUnlinkGuard, undefined, {
+    backupDirOverride: tmpBackupDir,
+    isWindowsFn: () => true,
+    trashItemFn: async () => {
+      trashItemCalled = true;
+      throw new Error('Simulated Electron trashItem failure');
+    },
+    powershellRecycleFn: async () => {
+      powershellCalled = true;
+      throw new Error('Simulated PowerShell RecycleOption failure');
+    },
+    unlinkFn: async () => {
+      unlinkCalled = true;
+    },
+  });
+
+  assert(
+    unlinkCalled === false,
+    '11a. BINDING RAIL: unlink() is NEVER called when deletionMethod is "recycle-bin"'
+  );
+  assert(
+    fs.existsSync(testFileGuard) === true,
+    '11b. BINDING RAIL: File still exists on disk; was NOT silently permanently deleted'
+  );
+  assert(
+    resUnlinkGuard.success === false,
+    '11c. Operation fails closed (success: false) when Recycle Bin operations fail'
+  );
+  assert(
+    resUnlinkGuard.failed === 1 && resUnlinkGuard.completed === 0,
+    '11d. Failure count is 1 and completed is 0'
+  );
+  assert(
+    trashItemCalled === true && powershellCalled === true,
+    '11e. trashItem was attempted and PowerShell fallback was attempted'
+  );
+
+  // 11f-g. PowerShell fallback succeeds when trashItem fails
+  const testFilePs = path.join(phase11Tmp, 'ps_fallback_test.bin');
+  fs.writeFileSync(testFilePs, Buffer.alloc(1024, 0x44));
+
+  const planPsFallback = {
+    id: `plan-ps-${Date.now()}`,
+    module: 'duplicate-finder',
+    actions: [
+      {
+        id: 'ps-action',
+        kind: 'delete-file',
+        target: testFilePs,
+        description: 'Test PS fallback',
+        reclaimableBytes: 1024,
+        metadata: { deletionMethod: 'recycle-bin' },
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: 1024,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  let psFallbackExecuted = false;
+  const resPsFallback = await executeFileDeletions(planPsFallback, undefined, {
+    backupDirOverride: tmpBackupDir,
+    isWindowsFn: () => true,
+    trashItemFn: async () => {
+      throw new Error('Simulated trashItem failure');
+    },
+    powershellRecycleFn: async (target) => {
+      psFallbackExecuted = true;
+      // Simulate successful recycle by removing the file
+      fs.unlinkSync(target);
+    },
+  });
+
+  assert(
+    psFallbackExecuted === true,
+    '11f. PowerShell fallback is invoked when trashItem fails'
+  );
+  assert(
+    resPsFallback.success === true && resPsFallback.completed === 1,
+    '11g. Successful PowerShell fallback completes operation with success: true'
+  );
+
+  console.log('\n=== Section 12: Partial Failure Reporting & Verification (Phase 11) ===\n');
+
+  // 12a-d. Partial failure reporting: 1 file recycled, 1 file locked/failing
+  const filePart1 = path.join(phase11Tmp, 'partial_success.bin');
+  const filePart2 = path.join(phase11Tmp, 'partial_fail.bin');
+  fs.writeFileSync(filePart1, Buffer.alloc(2000, 0x55));
+  fs.writeFileSync(filePart2, Buffer.alloc(3000, 0x66));
+
+  const planPartial = {
+    id: `plan-part-${Date.now()}`,
+    module: 'duplicate-finder',
+    actions: [
+      {
+        id: 'part-1',
+        kind: 'delete-file',
+        target: filePart1,
+        description: 'Part 1',
+        reclaimableBytes: 2000,
+        metadata: { deletionMethod: 'recycle-bin' },
+      },
+      {
+        id: 'part-2',
+        kind: 'delete-file',
+        target: filePart2,
+        description: 'Part 2',
+        reclaimableBytes: 3000,
+        metadata: { deletionMethod: 'recycle-bin' },
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: 5000,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const resPartial = await executeFileDeletions(planPartial, undefined, {
+    backupDirOverride: tmpBackupDir,
+    isWindowsFn: () => true,
+    trashItemFn: async (target) => {
+      if (target === filePart1) {
+        fs.unlinkSync(target); // Success for filePart1
+      } else {
+        throw new Error('File locked by another process (EBUSY)');
+      }
+    },
+    powershellRecycleFn: async () => {
+      throw new Error('Fallback also locked');
+    },
+  });
+
+  assert(
+    resPartial.success === false,
+    '12a. Partial failure reports success: false (completed !== actions.length)'
+  );
+  assert(
+    resPartial.completed === 1,
+    '12b. Partial failure completed count is exactly 1'
+  );
+  assert(
+    resPartial.failed === 1,
+    '12c. Partial failure failed count is exactly 1'
+  );
+  assert(
+    resPartial.reclaimableBytes === 2000,
+    '12d. Freed bytes counts ONLY actually recycled files (2000 bytes, never 5000)'
+  );
+
+  // 12e-f. Verification by re-read: silent no-op is NOT a success
+  const silentFailFile = path.join(phase11Tmp, 'silent_fail.bin');
+  fs.writeFileSync(silentFailFile, Buffer.alloc(1000, 0x77));
+
+  const planSilent = {
+    id: `plan-silent-${Date.now()}`,
+    module: 'duplicate-finder',
+    actions: [
+      {
+        id: 'silent-1',
+        kind: 'delete-file',
+        target: silentFailFile,
+        description: 'Silent fail',
+        reclaimableBytes: 1000,
+        metadata: { deletionMethod: 'recycle-bin' },
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: 1000,
+    reversibility: 'reversible',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const resSilent = await executeFileDeletions(planSilent, undefined, {
+    backupDirOverride: tmpBackupDir,
+    isWindowsFn: () => true,
+    trashItemFn: async () => {
+      // Claims success, but does not remove the file!
+    },
+  });
+
+  assert(
+    resSilent.success === false && resSilent.failed === 1,
+    '12e. Verification by re-read flags target still on disk as failure (never false success)'
+  );
+  assert(
+    resSilent.failures[0].error.includes('Verification failed'),
+    '12f. Error explicitly states verification failed (target still exists)'
+  );
+
+  // 12g. Backup manifest written to disk
+  assert(
+    typeof resSilent.backupPath === 'string' && fs.existsSync(resSilent.backupPath),
+    '12g. Backup manifest written to disk before execution'
+  );
+
+  // Cleanup fixtures
+  try {
+    fs.rmSync(phase11Tmp, { recursive: true, force: true });
+    fs.rmSync(outsideRootTmp, { recursive: true, force: true });
+  } catch {}
+
   console.log('\n========================================');
   console.log(`Total tests: ${passedCount + failedCount}`);
   console.log(`Passed:      ${passedCount}`);
@@ -459,7 +848,7 @@ async function runTests() {
   if (failedCount > 0) {
     process.exit(1);
   } else {
-    console.log('ALL PHASE 10 DUPLICATEFINDER TESTS PASSED!\n');
+    console.log('ALL PHASE 10 & 11 DUPLICATEFINDER TESTS PASSED!\n');
   }
 }
 
