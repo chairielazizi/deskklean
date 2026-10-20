@@ -818,10 +818,13 @@ export async function waitForProcessTree(
   while (Date.now() < deadline) {
     // 1. Query process list to discover newly spawned children
     let snapshot: ProcessInfo[] = [];
+    let snapshotSuccess = false;
     try {
       snapshot = await getSnapshot();
+      snapshotSuccess = true;
     } catch {
       snapshot = [];
+      snapshotSuccess = false;
     }
 
     // 2. Discover all children belonging to any currently tracked PID
@@ -847,7 +850,8 @@ export async function waitForProcessTree(
           anyAlive = true;
           break;
         }
-      } else {
+      } else if (!snapshotSuccess) {
+        // Only fall back to individual process check when the full snapshot query failed
         const alive = await checkAlive(pid);
         if (alive) {
           anyAlive = true;
