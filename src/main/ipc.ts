@@ -54,6 +54,11 @@ import {
 import { scanSmartClean } from './system/smartclean/scan';
 import { createSmartCleanPlan } from './system/smartclean/execute';
 import { scanRegistryFixer, createRegistryFixPlan, executeRegistryFix } from './system/registry-fixer';
+import {
+  getAllInstalledApps,
+  createAppUninstallPlan,
+  createRemoveAppRegistryEntryPlan,
+} from './system/appRemover';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -971,6 +976,18 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
         options
       );
     }
+    if (module === 'app-remover' || module === 'app') {
+      const app =
+        options?.app ||
+        (options?.appId ? (await getAllInstalledApps()).find((a) => a.id === options.appId) : null);
+      if (!app) {
+        throw new Error(`Application not found: ${options?.appId || 'unknown'}`);
+      }
+      if (options?.removeEntryOnly) {
+        return createRemoveAppRegistryEntryPlan(app);
+      }
+      return createAppUninstallPlan(app);
+    }
     throw new Error(`Module ${module} is not implemented in framework yet`);
   });
 
@@ -993,98 +1010,93 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- App Remover ---
-  let installedApps: InstalledApp[] = [
-    {
-      id: 'app-chrome',
-      name: 'Google Chrome',
-      publisher: 'Google LLC',
-      version: '122.0.6261.129',
-      installDate: '2024-01-15',
-      sizeBytes: 890000000,
-      installLocation: 'C:\\Program Files\\Google\\Chrome',
-      uninstallString: 'MsiExec.exe /I{B627197A-DB71-4628-98CA-0988ED7715DA}',
-      leftoversDetected: 14,
-    },
-    {
-      id: 'app-vscode',
-      name: 'Visual Studio Code',
-      publisher: 'Microsoft Corporation',
-      version: '1.87.2',
-      installDate: '2024-02-20',
-      sizeBytes: 1450000000,
-      installLocation: 'C:\\Users\\User\\AppData\\Local\\Programs\\Microsoft VS Code',
-      uninstallString: 'C:\\Users\\User\\AppData\\Local\\Programs\\Microsoft VS Code\\unins000.exe',
-      leftoversDetected: 28,
-    },
-    {
-      id: 'app-discord',
-      name: 'Discord',
-      publisher: 'Discord Inc.',
-      version: '1.0.9032',
-      installDate: '2024-03-01',
-      sizeBytes: 670000000,
-      installLocation: 'C:\\Users\\User\\AppData\\Local\\Discord',
-      uninstallString: 'C:\\Users\\User\\AppData\\Local\\Discord\\Update.exe --uninstall',
-      leftoversDetected: 8,
-    },
-    {
-      id: 'app-spotify',
-      name: 'Spotify Music',
-      publisher: 'Spotify AB',
-      version: '1.2.31.1205',
-      installDate: '2023-11-10',
-      sizeBytes: 520000000,
-      installLocation: 'C:\\Users\\User\\AppData\\Roaming\\Spotify',
-      uninstallString: 'C:\\Users\\User\\AppData\\Roaming\\Spotify\\uninstall.exe',
-      leftoversDetected: 19,
-    },
-    {
-      id: 'app-epic',
-      name: 'Epic Games Launcher',
-      publisher: 'Epic Games, Inc.',
-      version: '15.17.1',
-      installDate: '2023-09-04',
-      sizeBytes: 2150000000,
-      installLocation: 'C:\\Program Files (x86)\\Epic Games\\Launcher',
-      uninstallString: 'MsiExec.exe /X{D26D6816-EB66-4148-A976-59A6D2BE02C0}',
-      leftoversDetected: 35,
-    },
-    {
-      id: 'app-7zip',
-      name: '7-Zip 23.01 (x64)',
-      publisher: 'Igor Pavlov',
-      version: '23.01',
-      installDate: '2023-08-12',
-      sizeBytes: 5800000,
-      installLocation: 'C:\\Program Files\\7-Zip',
-      uninstallString: 'C:\\Program Files\\7-Zip\\Uninstall.exe',
-      leftoversDetected: 2,
-    },
-  ];
-
   ipcMain.handle(IPC_CHANNELS.APPS_GET_INSTALLED, async (): Promise<InstalledApp[]> => {
-    return installedApps;
+    return getAllInstalledApps();
   });
 
-  ipcMain.handle(IPC_CHANNELS.APPS_UNINSTALL, async (_, appId: string, deepCleanLeftovers: boolean): Promise<AppUninstallResult> => {
-    const appToRemove = installedApps.find((a) => a.id === appId);
-    installedApps = installedApps.filter((a) => a.id !== appId);
+  ipcMain.handle(
+    IPC_CHANNELS.APPS_UNINSTALL,
+    async (
+      _,
+      appId: string,
+      deepCleanLeftovers?: boolean
+    ): Promise<AppUninstallResult> => {
+      // 1. Resolve application from real enumeration
+      const allApps = await getAllInstalledApps();
+      const targetApp = allApps.find((a) => a.id === appId);
 
-    logActivity({
-      module: 'app-remover',
-      title: 'App Uninstalled',
-      detail: `Uninstalled ${appToRemove?.name || appId}${deepCleanLeftovers ? ' and removed leftover registry & folder keys' : ''}`,
-      type: 'success',
-      spaceFreedBytes: appToRemove?.sizeBytes,
-    });
+      if (!targetApp) {
+        return {
+          appId,
+          success: false,
+          leftoversCleanedCount: 0,
+          verified: false,
+          verificationDetail: `Application with ID "${appId}" was not found among installed applications.`,
+          message: `Application "${appId}" was not found.`,
+          failed: 1,
+          completed: 0,
+          skipped: 0,
+          reclaimableBytes: null,
+          failures: [{ target: appId, error: 'Application not found' }],
+        };
+      }
 
-    return {
-      appId,
-      success: true,
-      leftoversCleanedCount: deepCleanLeftovers ? (appToRemove?.leftoversDetected || 12) : 0,
-      message: `Successfully uninstalled ${appToRemove?.name || appId}`,
-    };
-  });
+      // 2. FRAMEWORK_PLAN: Create verified irreversible plan (D-AR-9)
+      const plan = createAppUninstallPlan(targetApp);
+
+      if (plan.blocked && plan.blocked.length > 0) {
+        return {
+          appId,
+          success: false,
+          leftoversCleanedCount: 0,
+          verified: false,
+          verificationDetail: plan.blocked[0].reason,
+          message: plan.blocked[0].reason,
+          failed: 1,
+          completed: 0,
+          skipped: 0,
+          reclaimableBytes: null,
+          failures: [{ target: appId, error: plan.blocked[0].reason }],
+        };
+      }
+
+      // 3. FRAMEWORK_EXECUTE: Run uninstaller and verify by re-enumeration (D-AR-4)
+      const execResult = await executeOperationPlan(plan.id, (item) => logActivity(item as any));
+
+      const isRebootRequired = execResult.message?.includes('reboot') || false;
+
+      return {
+        appId,
+        success: execResult.success,
+        leftoversCleanedCount: 0,
+        verified: execResult.success,
+        verificationDetail: execResult.success
+          ? 'Removal confirmed: application is no longer registered in system.'
+          : execResult.failures[0]?.error || execResult.message || 'Verification failed.',
+        rebootRequired: isRebootRequired,
+        completed: execResult.completed,
+        failed: execResult.failed,
+        skipped: execResult.skipped,
+        reclaimableBytes: execResult.reclaimableBytes,
+        failures: execResult.failures,
+        backupPath: execResult.backupPath,
+        message: execResult.message || (execResult.success ? 'Successfully uninstalled.' : 'Uninstall failed.'),
+      };
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.APPS_REMOVE_ENTRY_ONLY,
+    async (_, appId: string): Promise<ExecuteResult> => {
+      const allApps = await getAllInstalledApps();
+      const targetApp = allApps.find((a) => a.id === appId);
+      if (!targetApp) {
+        throw new Error(`Application not found: ${appId}`);
+      }
+      const plan = createRemoveAppRegistryEntryPlan(targetApp);
+      return executeOperationPlan(plan.id, (item) => logActivity(item as any));
+    }
+  );
 
   // --- Browser Extensions ---
   let browserExtensions: BrowserExtension[] = [

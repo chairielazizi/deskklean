@@ -50,6 +50,7 @@ export const IPC_CHANNELS = {
   // Apps
   APPS_GET_INSTALLED: 'apps:getInstalled',
   APPS_UNINSTALL: 'apps:uninstall',
+  APPS_REMOVE_ENTRY_ONLY: 'apps:removeEntryOnly',
 
   // Extensions
   EXTENSIONS_GET: 'extensions:get',

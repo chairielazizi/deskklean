@@ -80,8 +80,12 @@ const api: DeskKleanAPI = {
 
   // Apps
   getInstalledApps: (): Promise<InstalledApp[]> => ipcRenderer.invoke(IPC_CHANNELS.APPS_GET_INSTALLED),
-  uninstallApp: (appId: string, deepCleanLeftovers: boolean): Promise<AppUninstallResult> =>
+  uninstallApp: (appId: string, deepCleanLeftovers?: boolean): Promise<AppUninstallResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.APPS_UNINSTALL, appId, deepCleanLeftovers),
+  planAppUninstall: (appId: string): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'app-remover', { appId }),
+  removeAppRegistryEntry: (appId: string): Promise<ExecuteResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPS_REMOVE_ENTRY_ONLY, appId),
 
   // Extensions
   getBrowserExtensions: (browser?: BrowserType): Promise<BrowserExtension[]> =>

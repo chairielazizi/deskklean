@@ -356,18 +356,31 @@ export interface ExecuteResult {
 }
 
 // App Remover
+export type UninstallMethod = 'msi' | 'uninstall-string' | 'store' | 'unavailable';
+
 export interface InstalledApp {
-  id: string;
-  name: string;
-  publisher: string;
-  version: string;
-  installDate: string;
-  sizeBytes: number;
-  installLocation: string;
-  uninstallString: string;
+  id: string;                    // key name (product code or GUID or PackageFullName) — stable
+  name: string;                  // DisplayName
+  publisher: string;             // Publisher
+  version: string;               // DisplayVersion
+  installDate: string;           // InstallDate, normalised (YYYY-MM-DD)
+  sizeBytes: number | null;      // EstimatedSize (KB) * 1024, or null if absent
+  installLocation: string;       // InstallLocation
+  uninstallString: string | null;       // UninstallString, or null
+  quietUninstallString: string | null;  // QuietUninstallString, or null
+  productCode: string | null;           // PSComponentID or GUID key name, or null
+  isMsi: boolean;                // true when productCode is present
+  isStoreApp: boolean;           // true for MSIX/UWP apps
+  uninstallMethod: UninstallMethod;
   iconUrl?: string;
-  leftoversDetected: number;
-  isSystemComponent?: boolean;
+  leftoversDetected: number;     // always 0 in Phase 12 — not implemented
+  isSystemComponent?: boolean;   // always false — system components excluded
+  hive?: 'HKCU' | 'HKLM';        // registry hive
+  keyPath?: string;              // subkey path without hive prefix
+  registryKey?: string;          // full registry key path
+  packageFamilyName?: string;    // for Store apps
+  isProvisioned?: boolean;       // for Store apps: all users vs current user
+  nonRemovable?: boolean;        // for Store apps: protected system apps
 }
 
 export interface AppUninstallResult {
@@ -375,6 +388,15 @@ export interface AppUninstallResult {
   success: boolean;
   leftoversCleanedCount: number;
   message: string;
+  verified: boolean;
+  verificationDetail: string;
+  rebootRequired?: boolean;
+  completed?: number;
+  failed?: number;
+  skipped?: number;
+  reclaimableBytes?: number | null;
+  failures?: ExecuteFailure[];
+  backupPath?: string;
 }
 
 // Extension Manager
@@ -602,7 +624,9 @@ export interface DeskKleanAPI {
 
   // Apps
   getInstalledApps: () => Promise<InstalledApp[]>;
-  uninstallApp: (appId: string, deepCleanLeftovers: boolean) => Promise<AppUninstallResult>;
+  uninstallApp: (appId: string, deepCleanLeftovers?: boolean) => Promise<AppUninstallResult>;
+  planAppUninstall?: (appId: string) => Promise<OperationPlan>;
+  removeAppRegistryEntry?: (appId: string) => Promise<ExecuteResult>;
 
   // Extensions
   getBrowserExtensions: (browser?: BrowserType) => Promise<BrowserExtension[]>;

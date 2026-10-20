@@ -22,6 +22,13 @@ import {
   RegistryBackupEntry,
   BackupValidationResult,
 } from '../registry-fixer/backup';
+import {
+  waitForProcessTree,
+  checkPendingReboot,
+  verifyAppRemoved,
+  getAllInstalledApps,
+} from '../appRemover';
+import { InstalledApp } from '../../../shared/types';
 
 export interface RegistryExecutionRunners {
   isWindowsFn?: () => boolean;
@@ -46,7 +53,26 @@ export interface FileExecutionRunners {
   rmDirFn?: (target: string) => Promise<void>;
 }
 
-export type ExecutionRunners = RegistryExecutionRunners & FileExecutionRunners;
+export interface UninstallExecutionRunners {
+  isWindowsFn?: () => boolean;
+  isElevatedFn?: () => Promise<boolean>;
+  backupDirOverride?: string;
+  fileExistsFn?: (path: string) => boolean;
+  spawnProcessFn?: (
+    executable: string,
+    args: string[],
+    isInteractive: boolean
+  ) => Promise<{ pid: number; exitCodePromise?: Promise<number> }>;
+  waitForProcessTreeFn?: (
+    pid: number,
+    options?: { timeoutMs?: number }
+  ) => Promise<{ timedOut: boolean; allPids: number[] }>;
+  reEnumerateFn?: () => Promise<InstalledApp[]>;
+  checkPendingRebootFn?: () => Promise<boolean>;
+  runPowerShellFn?: (script: string) => Promise<string>;
+}
+
+export type ExecutionRunners = RegistryExecutionRunners & FileExecutionRunners & UninstallExecutionRunners;
 
 /**
  * Executes a planned destructive operation (such as restoring a registry backup).
@@ -141,6 +167,12 @@ export async function executeOperationPlan(
 
   if (hasFileDeletions) {
     return executeFileDeletions(plan, logActivity, runners);
+  }
+
+  // Handle App Uninstall Plan (Phase 12 App Remover)
+  const hasUninstallActions = plan.actions.some((a) => a.kind === 'uninstall');
+  if (hasUninstallActions) {
+    return executeUninstallActions(plan, logActivity, runners);
   }
 
   return {
@@ -933,6 +965,248 @@ export async function executeRegistryDeletions(
     reclaimableBytes: null,
     failures,
     backupPath,
+    message,
+  };
+}
+
+/**
+ * Executes an application uninstallation plan through the framework pipeline:
+ * 1. Writes backup manifest to shared backup store before the first destructive call; aborts if backup fails.
+ * 2. Pre-flight check: verifies uninstaller executable exists on disk (D-AR-7).
+ * 3. Launches uninstaller process and waits for the entire process tree to exit (OQ-AR-4).
+ * 4. Re-enumerates installed applications to verify removal (D-AR-4).
+ * 5. Checks for pending reboot operations if still present (D-AR-6).
+ * 6. Logs confirmed outcome to activity log.
+ */
+export async function executeUninstallActions(
+  plan: import('./types').OperationPlan,
+  logActivity?: (item: any) => void,
+  runners?: UninstallExecutionRunners
+): Promise<ExecuteResult> {
+  const backupDir = runners?.backupDirOverride ?? getModuleBackupDir(plan.module);
+  const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const manifestPath = path.join(backupDir, `${isoTimestamp}-uninstall-manifest.json`);
+
+  // 1. Safety backup manifest before first destructive call (Phase 3 rail)
+  try {
+    writeFileBackupManifest(manifestPath, {
+      planId: plan.id,
+      module: plan.module,
+      timestamp: new Date().toISOString(),
+      reversibility: plan.reversibility,
+      irreversibilityReason: plan.irreversibilityReason,
+      totalReclaimableBytes: plan.totalReclaimableBytes,
+      actions: plan.actions.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        target: a.target,
+        description: a.description,
+        reclaimableBytes: a.reclaimableBytes,
+        metadata: a.metadata,
+      })),
+    });
+  } catch (err) {
+    return {
+      success: false,
+      completed: 0,
+      failed: plan.actions.length,
+      skipped: 0,
+      reclaimableBytes: null,
+      failures: [
+        {
+          target: manifestPath,
+          error: `Backup manifest creation failed before uninstall: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        },
+      ],
+      message: 'Backup manifest failed before uninstallation; no changes were made.',
+    };
+  }
+
+  let completed = 0;
+  let failed = 0;
+  let skipped = 0;
+  let freedBytes = 0;
+  let rebootRequired = false;
+  const failures: ExecuteFailure[] = [];
+
+  for (const action of plan.actions) {
+    if (action.kind !== 'uninstall') {
+      failures.push({
+        target: action.target,
+        error: `Unexpected action kind "${action.kind}" in uninstall plan`,
+      });
+      failed++;
+      continue;
+    }
+
+    const appId = (action.metadata?.appId as string) || action.target;
+    const isStoreApp = Boolean(action.metadata?.isStoreApp);
+    const isMsi = Boolean(action.metadata?.isMsi);
+    const productCode = action.metadata?.productCode as string | undefined;
+    const executable = (action.metadata?.executable as string) || action.target;
+    const args = (action.metadata?.args as string[]) || [];
+    const isInteractive = Boolean(action.metadata?.isInteractive);
+
+    // Pre-flight check: missing UninstallString target files caught before launch (D-AR-7)
+    const baseExe = (
+      path.win32 ? path.win32.basename(executable) : executable.replace(/^.*[\\/]/, '')
+    ).toLowerCase();
+    const isDirectSystemExe = ['msiexec', 'msiexec.exe', 'cmd.exe', 'powershell.exe'].includes(baseExe);
+    const checkFile = runners?.fileExistsFn ?? fs.existsSync;
+    if (!isStoreApp && !isMsi && !isDirectSystemExe && !checkFile(executable)) {
+      failures.push({
+        target: action.target,
+        error: `Uninstall unavailable — installer not found: ${executable}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // Launch & wait
+    try {
+      if (isStoreApp) {
+        // Store app removal via PowerShell
+        const psCmd = `Remove-AppxPackage -Package "${appId}"`;
+        if (runners?.runPowerShellFn) {
+          await runners.runPowerShellFn(psCmd);
+        } else {
+          await runPowerShell(psCmd);
+        }
+      } else {
+        // Desktop / MSI app removal
+        let rootPid = 0;
+        if (runners?.spawnProcessFn) {
+          const spawned = await runners.spawnProcessFn(executable, args, isInteractive);
+          rootPid = spawned.pid;
+        } else {
+          const { spawn } = await import('child_process');
+          const child = spawn(executable, args, {
+            windowsHide: !isInteractive,
+            detached: false,
+            stdio: isInteractive ? 'inherit' : 'ignore',
+          });
+          rootPid = child.pid || 0;
+        }
+
+        // Wait for process tree (OQ-AR-4)
+        if (runners?.waitForProcessTreeFn) {
+          await runners.waitForProcessTreeFn(rootPid, {
+            timeoutMs: isInteractive ? 300000 : 60000,
+          });
+        } else if (rootPid > 0) {
+          await waitForProcessTree(rootPid, {
+            timeoutMs: isInteractive ? 300000 : 60000,
+          });
+        }
+      }
+    } catch (err) {
+      failures.push({
+        target: action.target,
+        error: `Uninstaller launch error: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // BINDING RAIL 1 & D-AR-4: Verification is by re-enumeration, NEVER exit code alone!
+    try {
+      const reEnumerated = runners?.reEnumerateFn
+        ? await runners.reEnumerateFn()
+        : await getAllInstalledApps();
+
+      const verification = verifyAppRemoved(appId, reEnumerated, productCode);
+
+      if (verification.removed) {
+        // Verified gone from system!
+        completed++;
+        if (typeof action.reclaimableBytes === 'number') {
+          freedBytes += action.reclaimableBytes;
+        }
+      } else {
+        // Product still registered: check reboot-pending (D-AR-6)
+        const pendingReboot = runners?.checkPendingRebootFn
+          ? await runners.checkPendingRebootFn()
+          : await checkPendingReboot();
+
+        if (pendingReboot) {
+          rebootRequired = true;
+          failures.push({
+            target: action.target,
+            error: 'Uninstall will complete after a reboot.',
+          });
+          failed++;
+        } else {
+          failures.push({
+            target: action.target,
+            error: 'Verification failed: uninstaller exited but the product is still registered.',
+          });
+          failed++;
+        }
+      }
+    } catch (err) {
+      failures.push({
+        target: action.target,
+        error: `Verification error during re-enumeration: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+      failed++;
+    }
+  }
+
+  removeOperationPlan(plan.id);
+
+  const success = completed === plan.actions.length && failed === 0;
+
+  if (logActivity) {
+    if (success) {
+      logActivity({
+        module: plan.module,
+        title: 'Application Uninstalled',
+        detail: `Successfully uninstalled ${completed} application(s). Confirmed by re-enumeration. Backup manifest: ${path.basename(
+          manifestPath
+        )}`,
+        type: 'success',
+        spaceFreedBytes: freedBytes || undefined,
+      });
+    } else if (rebootRequired) {
+      logActivity({
+        module: plan.module,
+        title: 'Uninstall Requires Reboot',
+        detail: 'Uninstallation has scheduled file removals and will complete after system reboot.',
+        type: 'warning',
+      });
+    } else {
+      logActivity({
+        module: plan.module,
+        title: 'Application Uninstall Failed',
+        detail: failures.map((f) => f.error).join('; '),
+        type: 'error',
+      });
+    }
+  }
+
+  let message: string;
+  if (success) {
+    message = `Successfully uninstalled and verified removal of ${completed} application(s).`;
+  } else if (rebootRequired) {
+    message = 'Uninstall will complete after a reboot.';
+  } else if (completed > 0) {
+    message = `Uninstalled ${completed} application(s), but ${failed} failed verification.`;
+  } else {
+    message = failures[0]?.error || 'Application uninstall failed verification.';
+  }
+
+  return {
+    success,
+    completed,
+    failed,
+    skipped,
+    reclaimableBytes: freedBytes > 0 ? freedBytes : null,
+    failures,
+    backupPath: manifestPath,
     message,
   };
 }
