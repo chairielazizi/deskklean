@@ -201,6 +201,9 @@ from the `UninstallString` and checks that the file exists. If it does not:
 2. The entry is not offered for one-click uninstall.
 3. The user is offered a "remove registry entry only" option, which goes
    through the framework as a `registry-key` action with its own confirmation.
+   **The UI must state plainly that the application remains installed** — this
+   removes it from the list, not from the machine. Presenting it as an uninstall
+   would be the same false-success shape as the fake `HEALTH_FIX`.
 
 A missing `UninstallString` with a valid MSI product code is still uninstallable
 via `msiexec.exe` — the MSI path does not depend on the `UninstallString`.
@@ -352,12 +355,26 @@ The uninstall is expressed as a framework `uninstall` action:
   kind: 'uninstall',
   target: '<product code or package full name>',
   description: '<app name> (<version>)',
-  reclaimableBytes: sizeBytes,   // from enumeration, never estimated
+  reclaimableBytes: sizeBytes,   // the registry's EstimatedSize — an estimate, labelled as such
 }
 ```
 
 The plan declares `reversibility: 'irreversible'` with the D-AR-9 reason.
 `requiresElevation: true` — uninstalling always requires administrator rights.
+
+> **The framework has no `uninstall` action kind.** The current kinds are
+> `delete-file`, `delete-tree`, `delete-key`, `delete-value` and
+> `restore-registry`. Adding `uninstall` (or a `run-command` kind carrying an
+> executable, arguments and a wait strategy) is part of this phase, not a
+> discovery for the implementer.
+
+> **`reclaimableBytes` is an estimate and must be labelled as one.** It comes
+> from the registry's `EstimatedSize`, which is the installer's own estimate of
+> its footprint. The previous comment called it "never estimated", which is the
+> exact honesty failure this project exists to eliminate. The UI must say
+> "estimated size" — or the module should compute the real size from
+> `InstallLocation` using the Phase 9 walk. Never present an estimate as a
+> measurement.
 
 ### Step 3 — execute
 
@@ -477,6 +494,10 @@ re-enumerates to verify.
 
 Rails:
 - The uninstaller process is launched and waited on. A timeout is applied.
+- **Wait for the process tree, not just the primary process.** Inno Setup and
+  others spawn a child and exit immediately; a primary-only wait verifies
+  before the uninstaller has finished, which reports a failure for an uninstall
+  that is still in progress — or lets the next scan start underneath it.
 - Verification is by re-enumeration (D-AR-4), not by the uninstaller's exit
   code alone.
 - A reboot-pending detection runs when the product is still present after
@@ -569,4 +590,4 @@ Windows acceptance, run by the owner:
 | OQ-AR-1 | The silent-flag detection patterns for Inno Setup, NSIS, InstallShield, and Wise uninstallers were not verified against real uninstaller executables on the target machine. Which patterns are reliable? | Silent-flag detection (D-AR-3) |
 | OQ-AR-2 | Is `PendingFileRenameOperations` a reliable indicator of reboot-deferred removal? Its format and behaviour were not confirmed on the target machine. | Reboot detection (D-AR-6) |
 | OQ-AR-3 | Does `Get-AppxPackage` / `Remove-AppxPackage` work as expected on the target Windows version, and does elevation detection cover the Store-app path correctly? | Store apps (D-AR-8) |
-| OQ-AR-4 | Some uninstallers spawn child processes and exit immediately. Does the module need to wait for the entire process tree, or is waiting on the primary process sufficient? | Verification (D-AR-4) |
+| OQ-AR-4 | ~~Does the module need to wait for the entire process tree?~~ **Resolved (v1 decision): wait for the tree.** A primary-only wait verifies before a child-spawning uninstaller has finished, reporting a failure for an uninstall still in progress — or letting the next scan start underneath it. | Nothing — resolved |
