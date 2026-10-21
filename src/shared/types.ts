@@ -401,19 +401,43 @@ export interface AppUninstallResult {
 }
 
 // Extension Manager
-export type BrowserType = 'chrome' | 'edge' | 'firefox' | 'brave';
+export type BrowserId = 'chrome' | 'edge' | 'brave' | 'firefox';
+export type BrowserType = BrowserId;
 export type ExtensionPermissionRisk = 'safe' | 'moderate' | 'high';
 
-export interface BrowserExtension {
+export interface ExtensionItem {
   id: string;
-  browser: BrowserType;
   name: string;
   version: string;
-  description: string;
-  enabled: boolean;
-  permissions: string[];
-  riskLevel: ExtensionPermissionRisk;
-  path: string;
+  enabled: boolean | null;
+  installDate: string | null;
+  browser: BrowserId;
+  profilePath: string;
+  description?: string | null;
+  permissions?: string[];
+  riskLevel?: ExtensionPermissionRisk;
+}
+
+export type BrowserExtension = ExtensionItem;
+
+export type ExtensionPageTarget = BrowserId | { browser: BrowserId; extensionId?: string };
+
+export interface ExtensionOpenResult {
+  success: boolean;
+  reason?: string;
+}
+
+export interface BrowserStatus {
+  installed: boolean;
+  available: boolean;
+  reason?: string;
+  profileCount?: number;
+}
+
+export interface ExtensionScanResult {
+  extensions: ExtensionItem[];
+  browsers: Record<BrowserId, BrowserStatus>;
+  scannedAt: string;
 }
 
 // Disk Space Analyzer
@@ -647,9 +671,9 @@ export interface DeskKleanAPI {
   removeAppRegistryEntry?: (appId: string) => Promise<ExecuteResult>;
 
   // Extensions
-  getBrowserExtensions: (browser?: BrowserType) => Promise<BrowserExtension[]>;
-  toggleExtension: (id: string, enabled: boolean) => Promise<{ success: boolean }>;
-  removeExtension: (id: string) => Promise<{ success: boolean }>;
+  getBrowserExtensions: () => Promise<ExtensionScanResult>;
+  openExtensionPage: (target: ExtensionPageTarget | BrowserId) => Promise<ExtensionOpenResult>;
+  rescanExtensions: () => Promise<ExtensionScanResult>;
 
   // Disk Analyzer
   analyzeDisk: (drivePath: string) => Promise<DiskAnalysisResult>;

@@ -25,6 +25,11 @@ import {
   InstalledApp,
   AppUninstallResult,
   BrowserExtension,
+  ExtensionItem,
+  BrowserId,
+  ExtensionScanResult,
+  ExtensionOpenResult,
+  ExtensionPageTarget,
   DuplicateGroup,
   DuplicateScanConfig,
   DuplicateScanResult,
@@ -63,6 +68,11 @@ import {
   createAppUninstallPlan,
   createRemoveAppRegistryEntryPlan,
 } from './system/appRemover';
+import {
+  getExtensions,
+  rescanExtensions,
+  openExtensionPage,
+} from './system/extensions';
 import { isElevated, relaunchElevated } from './system/elevation';
 import {
   getProcessors,
@@ -1118,85 +1128,31 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
-  // --- Browser Extensions ---
-  let browserExtensions: BrowserExtension[] = [
-    {
-      id: 'ext-ublock',
-      browser: 'chrome',
-      name: 'uBlock Origin',
-      version: '1.56.0',
-      description: 'An efficient blocker. Easy on CPU and memory.',
-      enabled: true,
-      permissions: ['webRequest', 'webRequestBlocking', 'storage'],
-      riskLevel: 'safe',
-      path: 'Chrome/Default/Extensions/cjpalhdlnbpafiamejdnhcphjbkeiagm',
-    },
-    {
-      id: 'ext-bitwarden',
-      browser: 'chrome',
-      name: 'Bitwarden - Free Password Manager',
-      version: '2024.2.1',
-      description: 'A secure and free password manager for all of your devices.',
-      enabled: true,
-      permissions: ['storage', 'clipboardWrite', 'tabs'],
-      riskLevel: 'safe',
-      path: 'Chrome/Default/Extensions/nngceckbapebfimnlniiiahkandclblb',
-    },
-    {
-      id: 'ext-darkreader',
-      browser: 'edge',
-      name: 'Dark Reader',
-      version: '4.9.77',
-      description: 'Dark mode for every website. Take care of your eyes, use dark theme.',
-      enabled: true,
-      permissions: ['storage', '<all_urls>'],
-      riskLevel: 'moderate',
-      path: 'Edge/Default/Extensions/eimadpbcbfnmbkopoojfekhnkhdbieeh',
-    },
-    {
-      id: 'ext-coupon',
-      browser: 'chrome',
-      name: 'Auto-Coupons & Price Tracker (Adware Flag)',
-      version: '2.1.0',
-      description: 'Finds discounts automatically while shopping online.',
-      enabled: false,
-      permissions: ['<all_urls>', 'webRequest', 'cookies', 'history'],
-      riskLevel: 'high',
-      path: 'Chrome/Default/Extensions/randomadwareextensionid',
-    },
-    {
-      id: 'ext-vimium',
-      browser: 'firefox',
-      name: 'Vimium',
-      version: '2.1.2',
-      description: 'The Hacker\'s Browser. Vimium provides keyboard shortcuts for navigation.',
-      enabled: true,
-      permissions: ['tabs', 'storage'],
-      riskLevel: 'safe',
-      path: 'Firefox/Profiles/default/extensions/vimium',
-    },
-  ];
-
-  ipcMain.handle(IPC_CHANNELS.EXTENSIONS_GET, async (): Promise<BrowserExtension[]> => {
-    return browserExtensions;
+  // --- Browser Extensions (Phase 13: Read-Only Enumeration & Deep-Linking) ---
+  ipcMain.handle(IPC_CHANNELS.EXTENSIONS_GET, async (): Promise<ExtensionScanResult> => {
+    return getExtensions();
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXTENSIONS_TOGGLE, async (_, id: string, enabled: boolean) => {
-    browserExtensions = browserExtensions.map((e) => (e.id === id ? { ...e, enabled } : e));
-    return { success: true };
+  ipcMain.handle(IPC_CHANNELS.EXTENSIONS_RESCAN, async (): Promise<ExtensionScanResult> => {
+    return rescanExtensions();
   });
 
-  ipcMain.handle(IPC_CHANNELS.EXTENSIONS_REMOVE, async (_, id: string) => {
-    const ext = browserExtensions.find((e) => e.id === id);
-    browserExtensions = browserExtensions.filter((e) => e.id !== id);
-    logActivity({
-      module: 'extension-manager',
-      title: 'Extension Removed',
-      detail: `Removed browser extension: ${ext?.name || id}`,
-      type: 'info',
-    });
-    return { success: true };
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.EXTENSIONS_OPEN_PAGE,
+    async (_, target: ExtensionPageTarget | BrowserId): Promise<ExtensionOpenResult> => {
+      const browser = typeof target === 'string' ? target : target?.browser;
+      const res = await openExtensionPage(browser);
+      if (!res.success) {
+        logActivity({
+          module: 'extension-manager',
+          title: 'Open Extension Page Failed',
+          detail: `Failed to open ${browser} extensions page: ${res.reason}`,
+          type: 'warning',
+        });
+      }
+      return res;
+    }
+  );
 
   // --- Disk Space Analyzer ---
   let isDiskScanCancelled = false;

@@ -54,8 +54,8 @@ export const IPC_CHANNELS = {
 
   // Extensions
   EXTENSIONS_GET: 'extensions:get',
-  EXTENSIONS_TOGGLE: 'extensions:toggle',
-  EXTENSIONS_REMOVE: 'extensions:remove',
+  EXTENSIONS_OPEN_PAGE: 'extensions:openPage',
+  EXTENSIONS_RESCAN: 'extensions:rescan',
 
   // Disk Analyzer
   DISK_ANALYZE: 'disk:analyze',

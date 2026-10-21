@@ -18,6 +18,11 @@ import {
   AppUninstallResult,
   BrowserExtension,
   BrowserType,
+  BrowserId,
+  ExtensionItem,
+  ExtensionScanResult,
+  ExtensionOpenResult,
+  ExtensionPageTarget,
   DuplicateGroup,
   DuplicateScanConfig,
   DuplicateScanResult,
@@ -92,11 +97,12 @@ const api: DeskKleanAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.APPS_REMOVE_ENTRY_ONLY, appId),
 
   // Extensions
-  getBrowserExtensions: (browser?: BrowserType): Promise<BrowserExtension[]> =>
-    ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_GET, browser),
-  toggleExtension: (id: string, enabled: boolean) =>
-    ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_TOGGLE, id, enabled),
-  removeExtension: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_REMOVE, id),
+  getBrowserExtensions: (): Promise<ExtensionScanResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_GET),
+  openExtensionPage: (target: ExtensionPageTarget | BrowserId): Promise<ExtensionOpenResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_OPEN_PAGE, target),
+  rescanExtensions: (): Promise<ExtensionScanResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.EXTENSIONS_RESCAN),
 
   // Disk Analyzer
   analyzeDisk: (drivePath: string): Promise<DiskAnalysisResult> =>
