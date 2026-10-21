@@ -26,7 +26,9 @@ These are working agreements, not suggestions.
 
 ## 2. Current state
 
-32 IPC handlers across 12 feature modules.
+41 IPC handlers across 12 feature modules. **Phases 0–12 are real.** The only
+remaining fiction is SecureErase's free-space wipe, ExtensionManager (unstarted),
+and StartupOptimizer step 7.
 
 ### Real
 
@@ -37,29 +39,26 @@ These are working agreements, not suggestions.
 | Elevation | ✅ detect, relaunch, portable-aware |
 | Settings | ✅ real `settings.json` |
 | Window controls | ✅ Electron |
-| Registry backup *listing* | ✅ reads real `.reg` files |
+| Registry backup | ✅ reads real `.reg` files; write path validated before any delete |
+| HealthCheck | ✅ real aggregator — owns no scan logic, combines other modules' scans; score is `null` when nothing is measured |
+| SmartClean | ✅ scan + execute through the framework |
+| RegistryFixer | ✅ scan + fix through the framework, `.reg` backup validated first |
+| DiskAnalyzer | ✅ honest sizes — percentages against `scannedBytes`, reparse points distinguished escape-vs-skip |
+| DuplicateFinder | ✅ scan + delete — content-proven grouping, keep-copy guards, Recycle Bin via `trashItem` + PowerShell fallback |
+| AppRemover | ✅ real registry enumeration, `uninstall` action kind, verification by re-enumeration |
 
-### Honest stubs (refuse, don't lie)
-
-`REGISTRY_FIX`, `REGISTRY_RESTORE_BACKUP` — return `success: false` with a reason.
-
-### Mock / fiction — 12 handlers, 8 modules
+### Still fiction — 3 handlers, 3 modules
 
 | Module | What it does now |
 |---|---|
-| HealthCheck | Invents `score: 74`, hardcoded issues, `totalSpaceBytes: 4890000000`. `HEALTH_FIX` reports freeing 4.89 GB it never freed |
-| SmartClean | Hardcoded category sizes, fake `scanDurationMs: 1420`, execute references a sample issue list |
-| RegistryFixer | Scan returns `sampleRegistryIssues` |
-| AppRemover | Hardcoded `installedApps` array |
-| ExtensionManager | Hardcoded `browserExtensions` array |
-| DiskAnalyzer / DuplicateFinder | Hardcoded `duplicateGroups` |
-| SecureErase | `SHRED_ITEMS` **is half-real** (overwrites real bytes, capped at 3 passes); `WIPE_FREE_SPACE` reports wiping 10 GB it never touched |
+| SecureErase `WIPE_FREE_SPACE` | Logs "Free Space Wiped" and records it in the activity log **without touching the disk**. `SHRED_ITEMS` is half-real (overwrites real bytes, capped at 3 passes). |
+| ExtensionManager | Hardcoded `browserExtensions` array. **No module directory exists — Phase 13 is unstarted.** |
 | StartupOptimizer `SET_DELAY` | Still the mock (step 7) |
 
-**The two that matter most:** `HEALTH_FIX` and `WIPE_FREE_SPACE` report success for
-work not performed, and the activity log records them as completed. A user reads
-"10 GB wiped" and believes their data is gone when it is not. For SecureErase that is
-a security claim, not a cosmetic one.
+**The one that matters most:** `WIPE_FREE_SPACE` reports success for work not
+performed, and the activity log records it as completed. A user reads "10 GB wiped"
+and believes their data is gone when it is not. For SecureErase that is a security
+claim, not a cosmetic one — which is why Phase 14 comes next.
 
 ---
 
@@ -101,18 +100,18 @@ destructive. Each destructive module ships scan-first.
 | 0 | PowerShell/CIM bridge | ✅ |
 | 1 | SystemInfo — real data | ✅ |
 | 2 | StartupOptimizer — read, toggle, elevation, delay, restore UI | 🔧 steps 1–6 done, 7–8 pending |
-| 3 | **Shared destructive-operation framework** | 🔜 |
-| 4 | HealthCheck — real aggregator | 📝 |
-| 5 | SmartClean — scan | 📝 |
-| 6 | SmartClean — execute | 📝 |
-| 7 | RegistryFixer — scan | 📝 |
-| 8 | RegistryFixer — fix | 📝 |
-| 9 | DiskAnalyzer | 📝 |
-| 10 | DuplicateFinder — scan | 📝 |
-| 11 | DuplicateFinder — delete | 📝 |
-| 12 | AppRemover | 📝 |
-| 13 | ExtensionManager — read-only | 📝 |
-| 14 | SecureErase | 🔧 half-real |
+| 3 | **Shared destructive-operation framework** | ✅ six action kinds incl. `uninstall` |
+| 4 | HealthCheck — real aggregator | ✅ |
+| 5 | SmartClean — scan | ✅ |
+| 6 | SmartClean — execute | ✅ |
+| 7 | RegistryFixer — scan | ✅ |
+| 8 | RegistryFixer — fix | ✅ |
+| 9 | DiskAnalyzer | ✅ |
+| 10 | DuplicateFinder — scan | ✅ |
+| 11 | DuplicateFinder — delete | ✅ |
+| 12 | AppRemover | ✅ |
+| 13 | ExtensionManager — read-only | 📝 spec exists, unstarted |
+| 14 | SecureErase | 🔧 half-real — `SHRED_ITEMS` real, `WIPE_FREE_SPACE` fiction |
 | 15 | CI/CD, packaging, releases | 🔜 |
 
 Phases 3–15 each get their own markdown spec before implementation.
@@ -263,6 +262,23 @@ all seven** on 2026-10-16, so the proposed defaults are now the v1 decisions.
 | OQ-6 | Is `SystemComponent = 1` a complete test for excluding system components from RegistryFixer? | **No** — necessary but not sufficient; also require that the entry has no `UninstallString` |
 | — | Do we buy a code-signing certificate, and if so OV or EV? | **Skip signing for v1**; the installer warns on SmartScreen but installs. Revisit before any public distribution. |
 
+### 8.2a Decisions — Phases 10–12
+
+Settled during implementation of the duplicate finder and app remover. Each was
+flagged by reading the spec against the code before the phase was handed off.
+
+| # | Question | Decision |
+|---|---|---|
+| OQ-DF-1 | Hardlink detection mechanism | `fs.Stats.nlink > 1` — zero syscalls, no process spawns. `Get-Item` is a fallback only. |
+| OQ-DF-2 | Recycle Bin API | `electron.shell.trashItem` primary; `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile` fallback. Never `unlink()` — a permanent delete presented as a Recycle Bin operation is the worst failure this module can have. |
+| OQ-AR-1 | Silent-flag patterns for uninstallers | Unverified types run **interactively**. Silent flags appended only for verified types. |
+| OQ-AR-2 | Reboot-deferred removal detection | `PendingFileRenameOperations`, checked when the product is still present after the uninstaller exits. |
+| OQ-AR-3 | Store apps | `Get-AppxPackage` / `Remove-AppxPackage`, verification by re-running the query. |
+| OQ-AR-4 | Uninstaller process waiting | Wait for the **process tree**, not just the primary process. |
+| — | Does the framework need an `uninstall` action kind? | **Yes** — added. The framework's kinds were `delete-file`, `delete-tree`, `delete-key`, `delete-value`, `restore-registry`. |
+| — | Is `reclaimableBytes` an estimate? | **Yes** — it comes from the registry's `EstimatedSize`. Labelled as an estimate in the UI; never presented as a measurement. |
+| — | The "remove registry entry only" option | Offered only when the `UninstallString` target is missing, and the UI must state plainly that **the application remains installed**. |
+
 ### 8.3 Revisit at v2 — standing note
 
 The owner has asked for a standing note: **these are v1 decisions and are expected to
@@ -287,17 +303,17 @@ acceptance test, and recorded in that phase's Verification section.
 |---|---|---|
 | OQ-1 | Does Windows 10+ reject a rewritten `UserChoice` hash, as Chromium does with `Secure Preferences`? | 7–8 — file-association category stays HELD until known |
 | OQ-5 | Does a `requireAdministrator` manifest replace the relaunch at packaging time? | 15 — open option, not a decision |
-| OQ-7 | What is the complete set of MUICache value-name suffixes? | 7–8 |
-| OQ-8 | Should `InstallLocation` paths on network shares be treated differently? An unreachable share reads as "missing" and would false-positive. | 7–8 |
+| OQ-7 | ~~What is the complete set of MUICache value-name suffixes?~~ **Resolved as a safety question:** an unmatched suffix is now `indeterminate`, not a flag. The suffix list is an optimisation, not a safety dependency. Completeness remains open but blocks nothing. | 7–8 — resolved |
+| OQ-8 | ~~Should `InstallLocation` paths on network shares be treated differently?~~ **Resolved:** network paths (UNC and mapped drives) are skipped entirely and counted; the check distinguishes `ENOENT` from every other failure so permission errors are never mistaken for absence. | 7–8 — resolved |
 | OQ-SC-1 | Does `vssadmin delete shadows` still work on the target build (deprecated on Windows 11)? | 6 |
 | OQ-SC-2 | Are the NVIDIA shader-cache paths present (needs an NVIDIA GPU)? | 5 |
 | OQ-SC-3 | Does `%SystemRoot%\Logs\WindowsUpdate` exist on this build? | 5 |
-| OQ-DF-1 | Does `Get-Item`'s `LinkType` reliably distinguish NTFS hardlinks? | 10 |
-| OQ-DF-2 | Which API actually sends a file to the Recycle Bin — `SHFileOperation` or `Microsoft.VisualBasic.FileIO`? | 11 |
-| OQ-AR-1 | Are the silent-flag patterns for Inno Setup, NSIS, InstallShield and Wise uninstallers reliable? | 12 |
-| OQ-AR-2 | Is `PendingFileRenameOperations` a reliable reboot indicator? | 12 |
-| OQ-AR-3 | Do `Get-AppxPackage` / `Remove-AppxPackage` behave as expected on the target build? | 12 |
-| OQ-AR-4 | Wait for the whole uninstaller process tree, or just the primary process? | 12 |
+| OQ-DF-1 | ~~Does `Get-Item`'s `LinkType` reliably distinguish NTFS hardlinks?~~ **Resolved:** hardlink detection uses `fs.Stats.nlink > 1` — zero syscalls, no process spawns. `Get-Item` is a fallback only. | 10 — resolved |
+| OQ-DF-2 | ~~Which API actually sends a file to the Recycle Bin?~~ **Resolved by live Windows 11 benchmarking:** `electron.shell.trashItem` primary (zero process spawns, native `IFileOperation`), `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile` fallback (<10 ms GAC load). `SHFileOperation` rejected — its C# P/Invoke path costs ~1.5 s in `csc.exe`. Never `unlink()`. | 11 — resolved |
+| OQ-AR-1 | ~~Are the silent-flag patterns for Inno Setup, NSIS, InstallShield and Wise uninstallers reliable?~~ **Resolved:** unverified patterns are treated as unknown and run **interactively**. Silent flags are appended only for verified types. | 12 — resolved |
+| OQ-AR-2 | ~~Is `PendingFileRenameOperations` a reliable reboot indicator?~~ **Resolved:** used as the reboot-deferred detection signal when a product is still present after the uninstaller exits. | 12 — resolved |
+| OQ-AR-3 | ~~Do `Get-AppxPackage` / `Remove-AppxPackage` behave as expected on the target build?~~ **Resolved:** Store apps are enumerated and removed through them, with verification by re-running `Get-AppxPackage`. | 12 — resolved |
+| OQ-AR-4 | ~~Wait for the whole uninstaller process tree, or just the primary process?~~ **Resolved:** wait for the **tree**. A primary-only wait verifies before a child-spawning uninstaller has finished. | 12 — resolved |
 | OQ-E-1 | The exact profile paths for Chrome, Edge, Brave and Firefox | 13 |
 | OQ-E-2 | The exact schema of `extensions.settings.<id>` per Chromium version | 13 |
 | OQ-E-3 | The exact schema of Firefox's `extensions.json` per version | 13 |

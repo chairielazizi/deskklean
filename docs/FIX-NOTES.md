@@ -195,3 +195,70 @@ The dev server logged no transform errors while serving those modules.
      - `node scripts/test-phase2-step7-8.mjs`: 49/49 unit tests passed.
      - `node scripts/test-phase2-live.mjs`: 31/31 live integration tests passed on Windows.
      - Main process (`npm run build:main`) and Renderer (`npx vite build`) build cleanly with 0 errors.
+
+### 9. Phases 10–12 — Duplicate Finder and App Remover
+
+The defects below were each caught by reading the spec against the code before the
+phase was handed to agy, or by a live Windows run. None shipped.
+
+**Phase 10 — Duplicate Finder scan**
+
+- **OQ-DF-1 resolved.** Hardlink detection changed from `Get-Item`'s `LinkType`
+  (which spawns a process per file) to `fs.Stats.nlink > 1` — zero syscalls, no
+  process spawns. `Get-Item` is retained as a fallback for when `nlink` is
+  unavailable or wrong.
+- **Partial hash never confirms.** The partial hash (4 KB head + 4 KB tail) only
+  *groups* candidates; it never confirms a duplicate. Confirmation requires a full
+  SHA-256 match.
+- **Zero-byte files excluded.** They are trivially identical and useless to flag.
+- **Reparse points skipped**, so symlinks and junctions are never double-counted.
+- **matchBy coercion.** `matchBy: 'name-size'` is coerced to `'hash'` with a logged
+  warning — grouping on name is not proof.
+
+**Phase 11 — Duplicate Finder delete**
+
+- **The dangerous fallback, removed.** `execute.ts:278-280` called
+  `fs.promises.unlink(action.target)` when `electron.shell.trashItem` threw. That is
+  a **permanent delete presented as a Recycle Bin operation** — the user clicks
+  "Recycle" and the file is gone forever. The recycle-bin path is now
+  `trashItem` primary → `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile`
+  fallback → **fail closed**. Never `unlink()`.
+- **OQ-DF-2 resolved by live Windows 11 benchmarking.** `trashItem` wins on zero
+  process spawns (native `IFileOperation::PerformOperations`). The
+  `Microsoft.VisualBasic` fallback loads from the GAC in <10 ms.
+  `SHFileOperation` lost — its C# P/Invoke path needs `csc.exe`, ~1.5 s per call.
+- **Keep-copy guards.** The keep-copy is never a deletion target, in the module and
+  again in the framework's path validation. A group cannot have all copies selected.
+
+**Phase 12 — App Remover**
+
+- **The framework had no `uninstall` action kind.** The spec assumed one; the
+  framework's kinds were `delete-file`, `delete-tree`, `delete-key`, `delete-value`,
+  `restore-registry`. Added rather than discovered mid-implementation.
+- **`reclaimableBytes` was labelled "never estimated" while being the registry's
+  `EstimatedSize`.** That is the exact honesty failure this project exists to
+  eliminate. Now labelled as an estimate in both the plan and the UI.
+- **OQ-AR-4 resolved.** Wait for the **process tree**, not just the primary process —
+  Inno Setup and others spawn a child and exit immediately.
+- **The "remove registry entry only" option** is offered only when the
+  `UninstallString` target is missing, and the UI states plainly that **the
+  application remains installed**.
+- **Enumeration batched into one PowerShell call.** The original snippet spawned
+  `powershell.exe` per entry; 249 apps is 249 spawns.
+- **Windows PID collision fix (`020d2e5`).** `waitForProcessTree` fell back to
+  `process.kill(pid, 0)` when the process snapshot came back empty. On a live host a
+  mocked PID collided with a real OS process, so the probe returned "alive" and the
+  waiter looped to timeout. Fixed with a `snapshotSuccess` flag: an empty-but-
+  successful snapshot confirms exit; the PID probe runs only when the snapshot query
+  itself threw.
+- **Live host result:** 249 applications enumerated in <3 s, single PowerShell spawn.
+
+### 10. Phase 14 — Secure Erase
+
+- **OQ-SE-1 resolved (Open-file check).** Pure function `classifyOpenFile` maps `'locked'` to blocked with reason `"file is in use"`, and probe failures to `'indeterminate'` (fail-closed, never assumed clear). Tested on live host with PowerShell `[System.IO.FileShare]::None`.
+- **OQ-SE-2 resolved (Free-space temp file & headroom).** Wiping operates via deterministic `<volume>\$DeskKleanWipe.tmp`, always cleaned up in `finally` and swept on startup by `sweepLeftoverWipeFiles()`. Excluded from `DiskAnalyzer` and `SmartClean` scans. Stops writing at `max(1 GB, 5% of volume)` headroom to protect Windows stability, and reports partial result (never fake success).
+- **OQ-SE-3 resolved (SSD honesty).** Queries `MSFT_PhysicalDisk.MediaType` via CIM. If SSD (MediaType 4) or indeterminate, the mandatory honesty notice is displayed before confirmation: *"Overwriting reduces the chance of recovery but does not guarantee it on an SSD. For a guaranteed erase, use your drive's ATA Secure Erase feature."*
+- **Pass count strictly validated (D2).** Integer 1–3 only, default 1. Overwrite data generated via `crypto.randomBytes` (CSPRNG), never `Math.random()`.
+- **Framework `overwrite-file` action kind implemented.** Framework executor opens files `r+`, writes passes, invokes `handle.sync()` (`fsync`) before unlinking, verifies deletion by read-back, and records actual `bytesWritten`.
+- **Per-file accounting.** Nonexistent or locked files are counted as failed, never reported as completed or shredded. Fake 10 GB wipe removed.
+

@@ -194,19 +194,24 @@ Neither has been fixed; both are queued for the next agy run.
 
 ## Roadmap
 
+Superseded by `ROADMAP.md` for phases 3–15. The numbering below is the original
+plan; the executed plan split destructive modules into scan-then-execute phases.
+
 | Phase | Module | Notes |
 |---|---|---|
 | 0 ✅ | System bridge | `src/main/system/` |
 | 1 ✅ | System Info | specs + telemetry real |
-| 2 | **Startup Optimizer** | first module that *writes* to the system; introduces UAC elevation and real registry backup/restore |
-| 3 | **SmartClean** | the core product; needs a rules engine and a dry-run mode before it can delete anything |
-| 4 | **Registry Fixer** | highest risk; needs real `.reg` export/restore first — the fake backup was removed in `ad08a26` |
-| 5 | App Remover | read uninstall strings, invoke them |
-| 6 | Disk Analyzer | real directory walk + treemap |
-| 7 | Duplicate Finder | content hashing |
-| 8 | Extension Manager | read browser extension manifests |
-| 9 | Secure Erase | needs SSD detection per Q12b — the Phase 1 drive join is its foundation |
-| 10 | Health Check | aggregates 2–9, so it comes last |
+| 2 ✅ | **Startup Optimizer** | first module that *writes* to the system; introduces UAC elevation and real registry backup/restore. Steps 1–6 real; 7–8 pending |
+| 3 ✅ | **Shared destructive framework** | added ahead of SmartClean per D-R1-2 — Plan → Confirm → Execute → Verify → Record |
+| 4 ✅ | Health Check | aggregates the other modules' scans rather than inventing its own |
+| 5–6 ✅ | **SmartClean** | scan then execute, both through the framework |
+| 7–8 ✅ | **Registry Fixer** | scan then fix; `.reg` backup validated before any delete |
+| 9 ✅ | Disk Analyzer | real directory walk + treemap |
+| 10–11 ✅ | Duplicate Finder | content hashing; delete via the framework |
+| 12 ✅ | App Remover | real uninstall enumeration; verification by re-enumeration |
+| 13 | Extension Manager | read-only per D-R2-7 — spec written, unstarted |
+| 14 | Secure Erase | `SHRED_ITEMS` real; `WIPE_FREE_SPACE` still fiction. Next |
+| 15 | CI/CD, packaging, releases | not started |
 
 **Standing rules for every phase:** `Math.random()` is banned; a value that
 cannot be read is `null`, never invented; every section degrades independently;

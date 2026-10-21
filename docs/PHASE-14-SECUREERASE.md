@@ -93,6 +93,22 @@ compliance regimes require a specific count. But the UI must state that
 more passes do not increase the guarantee on an SSD, and that on modern
 HDDs one pass is sufficient.
 
+**The overwrite payload must be `crypto.randomBytes`, never `Math.random()`.**
+The current implementation writes `0x00` on even passes and `0xFF` on odd
+passes — a fixed pattern, not random data. That is a real weakness: a
+known-pattern overwrite is materially easier to detect as an overwrite and
+to reconstruct around. `Math.random()` is banned project-wide and is
+especially wrong here — it is not a CSPRNG. The buffer is generated once per
+pass and reused for every chunk; it does not need to be regenerated per
+chunk, but it must come from `crypto.randomBytes`.
+
+**Pass count must be validated before the plan is built.** `parseInt` output
+of `0` is not a valid pass count. The current code's
+`Math.min(method.passes, 3)` would run **zero** passes and then delete the
+file — a shred that overwrites nothing while reporting success. Reject
+anything that is not an integer in 1–3 at the plan boundary, before any
+handling.
+
 ### D3 — Open files ✅
 
 A file that is open by another process **cannot be shredded reliably** on
@@ -113,10 +129,29 @@ available free space, overwriting it with random data, then deleting it.
 On a nearly-full volume, there may be little or no free space to wipe.
 
 **Behaviour:** The plan checks the volume's free space. If free space is
-below a threshold (e.g. 1% of volume size or 100 MB, whichever is
-greater), the plan reports that there is insufficient free space to
-wipe and the action is skipped with a reason. The user is not shown a
-"success" for work that could not be done.
+below a threshold (1% of volume size or 100 MB, whichever is greater), the
+action is skipped and the reason must say **what was actually true**:
+
+> Free space is below the minimum worth wiping (X MB). Nothing was
+> overwritten.
+
+Not "insufficient free space" — that reads as "the operation could not run",
+when the honest statement is "there was nothing worth wiping". Same
+distinction as `reclaimableBytes`: never let a refusal describe a different
+situation than the real one.
+
+**The wipe must leave headroom.** Writing until the volume is 100% full can
+destabilise Windows — on the system volume especially. Stop writing at a
+configurable floor (default: leave 1 GB or 5% of volume size, whichever is
+greater) and report the bytes actually written. A wipe that stops early is a
+partial result, reported as partial — not a failure, and not a success.
+
+**The temp file name is deterministic and cleaned up on startup.**
+`<volume>\$DeskKleanWipe.tmp` (or an equivalent fixed name). The `finally`
+block removes it on the normal path; on startup the module checks for a
+leftover and deletes it before any scan, because a crash mid-wipe leaves a
+multi-gigabyte file that would otherwise be counted as used space forever.
+The temp file is also excluded from DiskAnalyzer and SmartClean results.
 
 ### D5 — Irreversibility ✅
 
@@ -154,6 +189,21 @@ kind, plan with `reversible: 'irreversible'`, distinct confirmation,
 verify by read-back (confirm the file is gone / the free-space file was
 deleted), record in the activity log.
 
+> **`overwrite-file` is declared but not implemented.** It exists in
+> `ActionKind` (`framework/types.ts`), but `execute.ts` handles only
+> `delete-file`, `delete-tree`, `registry-key`, `registry-value` and
+> `uninstall`. Adding the `overwrite-file` executor is part of this phase,
+> not a discovery for the implementer. The executor must: open the file
+> read-write, write `passes` × the file's full length in crypto-random
+> bytes, `fsync` before closing, then delete. It must record the bytes
+> actually written per pass — the only measurable claim available.
+
+> **`bytesWiped` needs a home.** `ExecuteResult` carries
+> `reclaimableBytes` — space reclaimed — which is not what a wipe produces:
+> a wipe reclaims nothing. "Bytes overwritten" is a different quantity.
+> Extend `ExecuteResult` with an optional `bytesWritten?: number`, or carry
+> it in `message` — but do not overload `reclaimableBytes` with it.
+
 ---
 
 ## Files
@@ -162,7 +212,10 @@ deleted), record in the activity log.
 src/main/system/secureErase.ts  NEW  — shredding, free-space wiping,
                                       pass-count logic, open-file check,
                                       free-space check
-src/main/system/framework/     (Phase 3) — overwrite-file action kind
+src/main/system/framework/execute.ts  EDIT — add the overwrite-file executor
+                                             (declared in ActionKind but never
+                                             implemented), fsync before delete
+src/main/system/framework/types.ts    EDIT — optional bytesWritten on ExecuteResult
 src/main/ipc.ts                EDIT — rewire SHRED_ITEMS, WIPE_FREE_SPACE
 src/shared/types.ts           EDIT — ShredOptions, WipeOptions, ShredResult,
                                       WipeResult
@@ -190,20 +243,32 @@ is complete.
 
 Pure logic, runs on the build machine, required before the phase is done:
 
-- Pass count validation: 0 rejected, 1–3 accepted, >3 rejected
-- Open-file detection: returns true for a file with a held handle
-- Free-space threshold: returns "insufficient" below threshold, "sufficient" above
+- Pass count validation: 0 rejected, 1–3 accepted, >3 rejected, non-integer rejected
+- Free-space threshold: refuses below the minimum, proceeds above it, and the
+  refusal reason names the real condition
+- Headroom floor: a wipe stops before the volume is full and reports a partial result
 - Irreversibility declaration: shred plan has `reversible: 'irreversible'` with a reason
-- Partial failure: 3 files, 1 open → `completed: 2, failed: 1, success: false`
+- Partial failure: 3 files, 1 blocked → `completed: 2, failed: 1, success: false`
+- **Per-file accounting: a path that could not be shredded is NOT counted as
+  shredded.** The current handler returns `shreddedCount: paths.length`
+  regardless of what the loop actually did — a nonexistent file reports as
+  shredded. Count successes, not inputs.
+- **Open-file classification logic** — a pure function taking an injectable
+  probe result and returning `blocked`/`clear`. The *probe itself* is a
+  Windows-only mechanism (handle semantics) and is NOT testable on Linux.
+  Do not claim otherwise in the test suite.
 
 Windows acceptance, run by the owner:
 
-1. Shred a small test file on an HDD — confirm the file is gone after shredding
+1. Shred a small test file on an HDD — confirm the file is gone **and** that
+   the reported bytes written equal `fileSize × passes`. Deletion alone proves
+   `unlink`, not the overwrite; the byte count is the measurable claim.
 2. Shred a small test file on an SSD — confirm the file is gone, confirm the SSD honesty notice appeared
 3. Attempt to shred an open file — confirm it is blocked with reason
-4. Wipe free space on a volume with known free space — confirm the temp file is created, overwritten and deleted
-5. Wipe free space on a nearly-full volume — confirm it refuses with "insufficient free space"
+4. Wipe free space on a volume with known free space — confirm the temp file is created, overwritten and deleted, and the reported bytes match what was written
+5. Wipe free space on a nearly-full volume — confirm it refuses and the reason names the real condition
 6. Confirm the activity log records real outcomes, not fabricated ones
+7. Kill the process mid-wipe — confirm the leftover temp file is removed on next startup
 
 ---
 
@@ -223,6 +288,6 @@ Windows acceptance, run by the owner:
 
 | # | Question | Blocks |
 |---|---|---|
-| OQ-SE-1 | How to detect that a file is open by another process — an exclusive lock attempt, handle enumeration, or an equivalent. The mechanism was not specified and must be chosen and tested on the target machine. | The "open file" refusal path |
-| OQ-SE-2 | The temp file name and directory used for free-space wiping must be confirmed on the target machine. The spec only requires that it be created safely and deleted in a `finally` block. | Free-space wipe |
-| OQ-SE-3 | SSD-vs-HDD detection depends on the Phase 1 Storage Management provider being present. If it is unavailable, detection returns `null` and the SSD honesty notice is shown **by default** — never assumed. | The honesty notice |
+| OQ-SE-1 | ~~How to detect that a file is open by another process?~~ **Resolved by design:** the check is an injectable probe, defaulting to an exclusive-open attempt (`fs.open(path, 'r+')`), which fails on Windows when another process holds the file without share-write. A probe failure is `indeterminate` — never silently treated as "clear". The *classification* is a pure function; the probe is Windows-only and tested on the host. | The "open file" refusal path |
+| OQ-SE-2 | ~~The temp file name and directory for free-space wiping.~~ **Resolved by design:** `<volume>\$DeskKleanWipe.tmp`, deleted in `finally`, swept on startup, and excluded from DiskAnalyzer/SmartClean results. The exact name is confirmed on the host during acceptance. | Free-space wipe |
+| OQ-SE-3 | SSD-vs-HDD detection depends on the Phase 1 Storage Management provider being present. **Confirmed present** — `MSFT_PhysicalDisk.MediaType` is already queried in `cim.ts` and mapped in `parse.ts`. If it is unavailable at runtime, detection returns `null` and the SSD honesty notice is shown **by default** — never assumed. | The honesty notice |
