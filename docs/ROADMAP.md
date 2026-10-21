@@ -28,14 +28,14 @@ These are working agreements, not suggestions.
 
 41 IPC handlers across 12 feature modules. **Phases 0–12 are real.** The only
 remaining fiction is SecureErase's free-space wipe, ExtensionManager (unstarted),
-and StartupOptimizer step 7.
+and SecureErase free-space wipe, ExtensionManager (unstarted).
 
 ### Real
 
 | Module | State |
 |---|---|
 | SystemInfo | ✅ 20 typed CIM queries, per-section graceful degradation |
-| StartupOptimizer | ✅ read + toggle (steps 1–6); steps 7–8 pending |
+| StartupOptimizer | ✅ read + toggle, delay, backup/restore (steps 1–8) |
 | Elevation | ✅ detect, relaunch, portable-aware |
 | Settings | ✅ real `settings.json` |
 | Window controls | ✅ Electron |
@@ -53,7 +53,7 @@ and StartupOptimizer step 7.
 |---|---|
 | SecureErase `WIPE_FREE_SPACE` | Logs "Free Space Wiped" and records it in the activity log **without touching the disk**. `SHRED_ITEMS` is half-real (overwrites real bytes, capped at 3 passes). |
 | ExtensionManager | Hardcoded `browserExtensions` array. **No module directory exists — Phase 13 is unstarted.** |
-| StartupOptimizer `SET_DELAY` | Still the mock (step 7) |
+| StartupOptimizer `SET_DELAY` | ❌ removed — steps 1-8 implemented |
 
 **The one that matters most:** `WIPE_FREE_SPACE` reports success for work not
 performed, and the activity log records it as completed. A user reads "10 GB wiped"
@@ -99,7 +99,7 @@ destructive. Each destructive module ships scan-first.
 |---|---|---|
 | 0 | PowerShell/CIM bridge | ✅ |
 | 1 | SystemInfo — real data | ✅ |
-| 2 | StartupOptimizer — read, toggle, elevation, delay, restore UI | 🔧 steps 1–6 done, 7–8 pending |
+| 2 | StartupOptimizer — read, toggle, elevation, delay, restore UI | ✅ steps 1–8 done |
 | 3 | **Shared destructive-operation framework** | ✅ six action kinds incl. `uninstall` |
 | 4 | HealthCheck — real aggregator | ✅ |
 | 5 | SmartClean — scan | ✅ |

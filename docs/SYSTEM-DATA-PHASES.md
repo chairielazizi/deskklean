@@ -201,7 +201,7 @@ plan; the executed plan split destructive modules into scan-then-execute phases.
 |---|---|---|
 | 0 ✅ | System bridge | `src/main/system/` |
 | 1 ✅ | System Info | specs + telemetry real |
-| 2 ✅ | **Startup Optimizer** | first module that *writes* to the system; introduces UAC elevation and real registry backup/restore. Steps 1–6 real; 7–8 pending |
+| 2 ✅ | **Startup Optimizer** | first module that *writes* to the system; introduces UAC elevation and real registry backup/restore. Steps 1–8 done — delay, backup/restore, elevation |
 | 3 ✅ | **Shared destructive framework** | added ahead of SmartClean per D-R1-2 — Plan → Confirm → Execute → Verify → Record |
 | 4 ✅ | Health Check | aggregates the other modules' scans rather than inventing its own |
 | 5–6 ✅ | **SmartClean** | scan then execute, both through the framework |
