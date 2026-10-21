@@ -260,6 +260,11 @@ export async function scanCategory(
     }
 
     for (const entry of entries) {
+      // Phase 14: Exclude wipe temp file from SmartClean results
+      if (entry.name.toLowerCase() === '$deskkleanwipe.tmp') {
+        continue;
+      }
+
       const childPath = path.join(currentDir, entry.name);
 
       // Guard: Reparse points / symlinks are skipped to prevent directory escape

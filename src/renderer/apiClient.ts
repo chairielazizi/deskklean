@@ -22,6 +22,10 @@ import {
   DuplicateScanConfig,
   DuplicateScanResult,
   ShredMethodId,
+  ShredOptions,
+  WipeOptions,
+  ShredResult,
+  WipeResult,
   AppSettings,
   ActivityItem,
   DiskAnalysisResult,
@@ -852,15 +856,79 @@ const mockAPI: DeskKleanAPI = {
     createdAt: new Date().toISOString(),
   }),
 
-  shredItems: async (paths: string[], methodId: ShredMethodId) => ({
+  shredItems: async (
+    paths: string[],
+    _methodId?: ShredMethodId | number,
+    _options?: Partial<ShredOptions>
+  ): Promise<ShredResult> => ({
     success: true,
+    completed: paths.length,
+    failed: 0,
+    skipped: 0,
+    reclaimableBytes: null,
+    bytesWritten: 0,
     shreddedCount: paths.length,
+    failures: [],
+    message: `Securely shredded ${paths.length} items`,
   }),
 
-  wipeFreeSpace: async () => ({
-    success: true,
-    wipedBytes: 10 * 1024 * 1024 * 1024,
+  wipeFreeSpace: async (
+    _driveLetter: string,
+    _methodId?: ShredMethodId | number,
+    _options?: Partial<WipeOptions>
+  ): Promise<WipeResult> => ({
+    success: false, // Partial result per D4
+    completed: 1,
+    failed: 0,
+    skipped: 0,
+    reclaimableBytes: null,
+    bytesWritten: 0,
+    wipedBytes: 0,
+    failures: [],
+    message: 'Free space wipe completed to headroom floor (partial result)',
   }),
+
+  planShred: async (paths: string[], passes: number = 1): Promise<OperationPlan> => ({
+    id: `mock-plan-${Date.now()}`,
+    module: 'secure-erase',
+    actions: paths.map((p, idx) => ({
+      id: `shred-${idx + 1}`,
+      kind: 'overwrite-file',
+      target: p,
+      description: `Secure overwrite (${passes} pass) and delete`,
+      reclaimableBytes: null,
+    })),
+    blocked: [],
+    totalReclaimableBytes: null,
+    reversibility: 'irreversible',
+    irreversibilityReason:
+      'Overwriting destroys the original bytes. The file cannot be restored from a backup because no backup is made — the backup would contain the very data the shred is meant to destroy.',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  }),
+
+  planWipeFreeSpace: async (volumeRoot: string): Promise<OperationPlan> => ({
+    id: `mock-plan-wipe-${Date.now()}`,
+    module: 'secure-erase',
+    actions: [
+      {
+        id: 'wipe-1',
+        kind: 'overwrite-file',
+        target: `${volumeRoot}\\$DeskKleanWipe.tmp`,
+        description: `Wipe free space on ${volumeRoot}`,
+        reclaimableBytes: null,
+      },
+    ],
+    blocked: [],
+    totalReclaimableBytes: null,
+    reversibility: 'irreversible',
+    irreversibilityReason:
+      'Overwriting destroys the original bytes. The file cannot be restored from a backup because no backup is made — the backup would contain the very data the shred is meant to destroy.',
+    requiresElevation: false,
+    createdAt: new Date().toISOString(),
+  }),
+
+  isTargetSsd: async (): Promise<boolean | null> => true,
 
   getSettings: async (): Promise<AppSettings> => DEFAULT_SETTINGS,
   saveSettings: async () => ({ success: true }),

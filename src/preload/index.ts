@@ -22,6 +22,10 @@ import {
   DuplicateScanConfig,
   DuplicateScanResult,
   ShredMethodId,
+  ShredOptions,
+  WipeOptions,
+  ShredResult,
+  WipeResult,
   AppSettings,
   ActivityItem,
   DiskAnalysisResult,
@@ -115,10 +119,24 @@ const api: DeskKleanAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'duplicate-finder', { fileIds }),
 
   // Secure Erase
-  shredItems: (paths: string[], methodId: ShredMethodId) =>
-    ipcRenderer.invoke(IPC_CHANNELS.SHRED_ITEMS, paths, methodId),
-  wipeFreeSpace: (driveLetter: string, methodId: ShredMethodId) =>
-    ipcRenderer.invoke(IPC_CHANNELS.WIPE_FREE_SPACE, driveLetter, methodId),
+  shredItems: (
+    paths: string[],
+    methodId?: ShredMethodId | number,
+    options?: Partial<ShredOptions>
+  ): Promise<ShredResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SHRED_ITEMS, paths, methodId, options),
+  wipeFreeSpace: (
+    driveLetter: string,
+    methodId?: ShredMethodId | number,
+    options?: Partial<WipeOptions>
+  ): Promise<WipeResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.WIPE_FREE_SPACE, driveLetter, methodId, options),
+  planShred: (paths: string[], passes?: number): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'secure-erase', { paths, passes }),
+  planWipeFreeSpace: (volumeRoot: string): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'secure-erase', { type: 'wipe', volumeRoot }),
+  isTargetSsd: (targetPath: string): Promise<boolean | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SHRED_IS_SSD, targetPath),
 
   // Settings
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),

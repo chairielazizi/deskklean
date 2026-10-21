@@ -353,6 +353,7 @@ export interface ExecuteResult {
   failures: ExecuteFailure[];
   backupPath?: string;
   message?: string;
+  bytesWritten?: number;
 }
 
 // App Remover
@@ -540,6 +541,23 @@ export interface ShredProgress {
   currentSpeedBytesSec: number;
 }
 
+export interface ShredOptions {
+  passes: number; // 1–3, default 1
+  targetPaths: string[];
+}
+
+export interface WipeOptions {
+  volumeRoot: string;
+}
+
+export interface ShredResult extends ExecuteResult {
+  shreddedCount: number;
+}
+
+export interface WipeResult extends ExecuteResult {
+  wipedBytes: number;
+}
+
 // Settings
 export interface CustomCleanRule {
   id: string;
@@ -644,8 +662,19 @@ export interface DeskKleanAPI {
   planDuplicateDelete?: (fileIds?: string[]) => Promise<OperationPlan>;
 
   // Secure Erase
-  shredItems: (paths: string[], methodId: ShredMethodId) => Promise<{ success: boolean; shreddedCount: number }>;
-  wipeFreeSpace: (driveLetter: string, methodId: ShredMethodId) => Promise<{ success: boolean; wipedBytes: number }>;
+  shredItems: (
+    paths: string[],
+    methodId?: ShredMethodId | number,
+    options?: Partial<ShredOptions>
+  ) => Promise<ShredResult>;
+  wipeFreeSpace: (
+    driveLetter: string,
+    methodId?: ShredMethodId | number,
+    options?: Partial<WipeOptions>
+  ) => Promise<WipeResult>;
+  planShred?: (paths: string[], passes?: number) => Promise<OperationPlan>;
+  planWipeFreeSpace?: (volumeRoot: string) => Promise<OperationPlan>;
+  isTargetSsd?: (pathOrVolume: string) => Promise<boolean | null>;
 
   // Settings
   getSettings: () => Promise<AppSettings>;

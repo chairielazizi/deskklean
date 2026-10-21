@@ -69,6 +69,7 @@ export const IPC_CHANNELS = {
   // Secure Erase
   SHRED_ITEMS: 'shred:items',
   WIPE_FREE_SPACE: 'shred:wipeFreeSpace',
+  SHRED_IS_SSD: 'shred:isSsd',
 
   // Settings
   SETTINGS_GET: 'settings:get',

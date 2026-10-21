@@ -241,6 +241,11 @@ export async function walk(
         break;
       }
 
+      // Phase 14: Exclude wipe temp file from DiskAnalyzer results
+      if (entry.name.toLowerCase() === '$deskkleanwipe.tmp') {
+        continue;
+      }
+
       const entryPath = path.join(current.path, entry.name);
       let fsEntryPath: string;
       try {

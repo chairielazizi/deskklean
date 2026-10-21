@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { runPowerShell, isWindows } from '../powershell';
 import { readValue, buildRegSnippet, decodeStartupApproved, keyExists, RegistryHive, ReadValueResult } from '../registry';
 import { isElevated } from '../elevation';
@@ -51,6 +52,7 @@ export interface FileExecutionRunners {
   powershellRecycleFn?: (target: string, isDirectory: boolean) => Promise<void>;
   unlinkFn?: (target: string) => Promise<void>;
   rmDirFn?: (target: string) => Promise<void>;
+  randomBytesFn?: (size: number) => Buffer;
 }
 
 export interface UninstallExecutionRunners {
@@ -158,6 +160,15 @@ export async function executeOperationPlan(
 
   if (hasRegistryDeletions) {
     return executeRegistryDeletions(plan, logActivity, runners);
+  }
+
+  // Handle Overwrite / Shred File Plan (Phase 14 Secure Erase)
+  const hasOverwriteFiles = plan.actions.some(
+    (a) => a.kind === 'overwrite-file'
+  );
+
+  if (hasOverwriteFiles) {
+    return executeOverwriteFiles(plan, logActivity, runners);
   }
 
   // Handle File / Tree Deletion Plan (e.g. SmartClean)
@@ -441,6 +452,308 @@ export async function executeFileDeletions(
     message: success
       ? `Successfully cleaned ${completed} items.`
       : `Cleaned ${completed} of ${plan.actions.length} items (${failed} failed, ${skipped} skipped in use).`,
+  };
+}
+
+/**
+ * Executes a file overwrite / shredding plan or free-space wipe plan through the framework pipeline:
+ * 1. Writes a backup manifest to the shared backup store before the first destructive call.
+ * 2. For each action:
+ *    - For free-space wipe: writes random bytes up to maxWipeBytes leaving headroom floor, fsyncs, deletes temp file in finally, verifies deletion.
+ *    - For file shred: opens read-write, overwrites passes × length with crypto.randomBytes, fsyncs before closing, deletes file only after all passes complete, verifies by read-back.
+ *    - Per-file accounting: nonexistent paths and locked/failed paths are NOT counted as completed or shredded.
+ * 3. Records actual bytesWritten (never estimated/hardcoded).
+ * 4. Logs confirmed outcome to activity log.
+ * 5. Returns partial-failure aware ExecuteResult.
+ */
+export async function executeOverwriteFiles(
+  plan: import('./types').OperationPlan,
+  logActivity?: (item: any) => void,
+  runners?: ExecutionRunners
+): Promise<ExecuteResult> {
+  // 1. Write backup manifest before first destructive call (Phase 3 rail)
+  const backupDir = runners?.backupDirOverride ?? getModuleBackupDir(plan.module);
+  const isoTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const manifestPath = path.join(backupDir, `${isoTimestamp}-manifest.json`);
+
+  try {
+    writeFileBackupManifest(manifestPath, {
+      planId: plan.id,
+      module: plan.module,
+      timestamp: new Date().toISOString(),
+      reversibility: plan.reversibility,
+      irreversibilityReason: plan.irreversibilityReason,
+      totalReclaimableBytes: plan.totalReclaimableBytes,
+      actions: plan.actions.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        target: a.target,
+        description: a.description,
+        reclaimableBytes: a.reclaimableBytes,
+        metadata: a.metadata,
+      })),
+    });
+  } catch (err) {
+    return {
+      success: false,
+      completed: 0,
+      failed: plan.actions.length,
+      skipped: 0,
+      reclaimableBytes: null,
+      bytesWritten: 0,
+      failures: [
+        {
+          target: manifestPath,
+          error: `Backup manifest creation failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+      message: 'Backup manifest failed before execution; no changes were made.',
+    };
+  }
+
+  let completed = 0;
+  let failed = 0;
+  const skipped = 0;
+  let freedBytes = 0;
+  let totalBytesWritten = 0;
+  let hasPartialWipe = false;
+  const failures: ExecuteFailure[] = [];
+
+  const unlinkFn = runners?.unlinkFn ?? (async (p: string) => fs.promises.unlink(p));
+  const randomBytesFn = runners?.randomBytesFn ?? crypto.randomBytes;
+
+  for (const action of plan.actions) {
+    if (action.kind !== 'overwrite-file') {
+      failures.push({
+        target: action.target,
+        error: `Unexpected action kind for overwrite executor: ${action.kind}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // Free space wipe branch
+    if (action.metadata?.isFreeSpaceWipe) {
+      const tempPath = action.target;
+      const maxWipeBytes = typeof action.metadata.maxWipeBytes === 'number' ? action.metadata.maxWipeBytes : 0;
+      let wipedBytes = 0;
+      let wipeError: Error | null = null;
+      const CHUNK_SIZE = 65536;
+
+      try {
+        // Clean up any stale temp file first
+        if (fs.existsSync(tempPath)) {
+          try {
+            await unlinkFn(tempPath);
+          } catch {}
+        }
+
+        const handle = await fs.promises.open(tempPath, 'w');
+        try {
+          if (maxWipeBytes > 0) {
+            const chunkBuf = randomBytesFn(CHUNK_SIZE);
+            while (wipedBytes < maxWipeBytes) {
+              const toWrite = Math.min(CHUNK_SIZE, maxWipeBytes - wipedBytes);
+              const bufToWrite = toWrite === CHUNK_SIZE ? chunkBuf : chunkBuf.subarray(0, toWrite);
+              const { bytesWritten: written } = await handle.write(bufToWrite, 0, toWrite, wipedBytes);
+              wipedBytes += written;
+              if (written === 0) break;
+            }
+          }
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } catch (err: unknown) {
+        wipeError = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        // Deterministic temp file: always deleted in finally
+        if (fs.existsSync(tempPath)) {
+          try {
+            await unlinkFn(tempPath);
+          } catch (e) {
+            console.warn('Failed to unlink wipe temp file in finally:', e);
+          }
+        }
+      }
+
+      // Verification by read-back: confirm temp file is gone
+      if (fs.existsSync(tempPath)) {
+        failures.push({
+          target: tempPath,
+          error: 'Verification failed: wipe temp file still exists after completion',
+        });
+        failed++;
+      } else if (wipeError) {
+        failures.push({
+          target: tempPath,
+          error: `Free space wipe failed: ${wipeError.message}`,
+        });
+        failed++;
+      } else {
+        completed++;
+        totalBytesWritten += wipedBytes;
+        // Headroom floor: stop writing at max(1 GB, 5% of volume). Report as partial.
+        hasPartialWipe = true;
+      }
+      continue;
+    }
+
+    // Standard file shred branch
+    // Per-file accounting: nonexistent file CANNOT be shredded and must NOT count as completed
+    if (!fs.existsSync(action.target)) {
+      failures.push({
+        target: action.target,
+        error: 'Target does not exist on disk: cannot overwrite',
+      });
+      failed++;
+      continue;
+    }
+
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(action.target);
+      if (stat.isDirectory()) {
+        failures.push({
+          target: action.target,
+          error: 'Target is a directory: overwrite-file applies only to files',
+        });
+        failed++;
+        continue;
+      }
+    } catch (err: unknown) {
+      failures.push({
+        target: action.target,
+        error: `Cannot stat target: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+      continue;
+    }
+
+    const fileSize = stat.size;
+    const passes = typeof action.metadata?.passes === 'number' ? action.metadata.passes : 1;
+    if (!Number.isInteger(passes) || passes < 1 || passes > 3) {
+      failures.push({
+        target: action.target,
+        error: `Invalid pass count: ${passes}. Must be an integer between 1 and 3.`,
+      });
+      failed++;
+      continue;
+    }
+
+    let fileHandle: fs.promises.FileHandle;
+    try {
+      fileHandle = await fs.promises.open(action.target, 'r+');
+    } catch (err: unknown) {
+      failures.push({
+        target: action.target,
+        error: `Failed to open file for read-write: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+      continue;
+    }
+
+    let fileBytesWritten = 0;
+    const CHUNK_SIZE = 65536;
+    let writeError: Error | null = null;
+
+    try {
+      for (let pass = 0; pass < passes; pass++) {
+        if (fileSize > 0) {
+          const chunkBuf = randomBytesFn(Math.min(fileSize, CHUNK_SIZE));
+          let passWritten = 0;
+          while (passWritten < fileSize) {
+            const toWrite = Math.min(chunkBuf.length, fileSize - passWritten);
+            const { bytesWritten: writtenChunk } = await fileHandle.write(
+              chunkBuf,
+              0,
+              toWrite,
+              passWritten
+            );
+            passWritten += writtenChunk;
+            fileBytesWritten += writtenChunk;
+          }
+        }
+      }
+      // fsync before closing (Step 1 requirement)
+      await fileHandle.sync();
+    } catch (err: unknown) {
+      writeError = err instanceof Error ? err : new Error(String(err));
+    } finally {
+      await fileHandle.close();
+    }
+
+    if (writeError) {
+      failures.push({
+        target: action.target,
+        error: `Overwrite write failed: ${writeError.message}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // Delete the file only after every pass completed
+    try {
+      await unlinkFn(action.target);
+    } catch (err: unknown) {
+      failures.push({
+        target: action.target,
+        error: `Failed to delete file after overwrite passes: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      failed++;
+      continue;
+    }
+
+    // Verification by read-back: confirm file is gone
+    if (fs.existsSync(action.target)) {
+      failures.push({
+        target: action.target,
+        error: 'Verification failed: target still exists on disk after shredding',
+      });
+      failed++;
+    } else {
+      completed++;
+      totalBytesWritten += fileBytesWritten;
+      if (typeof action.reclaimableBytes === 'number') {
+        freedBytes += action.reclaimableBytes;
+      }
+    }
+  }
+
+  // A wipe that stops early is a partial result, reported as partial — not a failure, and not a success.
+  const success = !hasPartialWipe && completed === plan.actions.length && failed === 0;
+
+  if (logActivity) {
+    const isAllSuccess = success;
+    logActivity({
+      module: plan.module,
+      title: isAllSuccess ? 'Secure Erase Completed' : 'Secure Erase Completed (Partial)',
+      detail: hasPartialWipe
+        ? `Free space wipe completed: ${totalBytesWritten} bytes written (partial result leaving headroom).`
+        : `Shredded ${completed} of ${plan.actions.length} items (${totalBytesWritten} bytes written). ${failed} failed. Backup manifest: ${path.basename(manifestPath)}`,
+      type: isAllSuccess ? 'success' : 'warning',
+      spaceFreedBytes: freedBytes,
+    });
+  }
+
+  removeOperationPlan(plan.id);
+
+  const message = success
+    ? `Successfully shredded ${completed} item${completed === 1 ? '' : 's'}`
+    : hasPartialWipe
+    ? `Free space wipe completed ${totalBytesWritten} bytes, stopped at headroom floor (partial result)`
+    : `Shredding incomplete: ${completed} completed, ${failed} failed`;
+
+  return {
+    success,
+    completed,
+    failed,
+    skipped,
+    reclaimableBytes: freedBytes,
+    bytesWritten: totalBytesWritten,
+    failures,
+    backupPath: manifestPath,
+    message,
   };
 }
 

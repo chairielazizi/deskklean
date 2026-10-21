@@ -29,6 +29,10 @@ import {
   DuplicateScanConfig,
   DuplicateScanResult,
   ShredMethodId,
+  ShredOptions,
+  WipeOptions,
+  ShredResult,
+  WipeResult,
   AppSettings,
   ActivityItem,
   DiskAnalysisResult,
@@ -81,6 +85,12 @@ import {
 } from './system/cim';
 import { walk } from './system/disk-analyzer';
 import { scanDuplicates, createDuplicateDeletePlan } from './system/duplicate-finder';
+import {
+  createShredPlan,
+  createFreeSpaceWipePlan,
+  assertValidPassCount,
+  isTargetSsd,
+} from './system/secureErase';
 import { getDiskMeasurements, getGpuVram64BitMb } from './system/systemInfo';
 import {
   toNumber,
@@ -988,6 +998,16 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       }
       return createAppUninstallPlan(app);
     }
+    if (module === 'secure-erase' || module === 'secureerase') {
+      if (options?.type === 'wipe' || options?.volumeRoot || options?.driveLetter) {
+        return createFreeSpaceWipePlan(options.volumeRoot || options.driveLetter, options);
+      }
+      return createShredPlan(
+        options?.paths || options?.targetPaths || [],
+        options?.passes ?? 1,
+        options
+      );
+    }
     throw new Error(`Module ${module} is not implemented in framework yet`);
   });
 
@@ -1349,54 +1369,106 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // --- Secure Erase ---
-  ipcMain.handle(IPC_CHANNELS.SHRED_ITEMS, async (_, paths: string[], methodId: ShredMethodId) => {
-    const method = SHRED_METHODS.find((m) => m.id === methodId) || SHRED_METHODS[0];
-
-    // For any real files passed, safely overwrite before deleting
-    for (const p of paths) {
-      try {
-        if (fs.existsSync(p) && fs.statSync(p).isFile()) {
-          const fileSize = fs.statSync(p).size;
-          const fd = fs.openSync(p, 'r+');
-          for (let pass = 0; pass < Math.min(method.passes, 3); pass++) {
-            const buf = Buffer.alloc(Math.min(fileSize, 65536), pass % 2 === 0 ? 0x00 : 0xff);
-            let written = 0;
-            while (written < fileSize) {
-              const toWrite = Math.min(buf.length, fileSize - written);
-              fs.writeSync(fd, buf, 0, toWrite, written);
-              written += toWrite;
-            }
-          }
-          fs.closeSync(fd);
-          fs.unlinkSync(p);
-        }
-      } catch (err) {
-        console.error('Shredding error for path:', p, err);
+  ipcMain.handle(
+    IPC_CHANNELS.SHRED_ITEMS,
+    async (
+      _,
+      paths: string[],
+      methodIdOrPasses?: ShredMethodId | number,
+      options?: Partial<ShredOptions>
+    ): Promise<ShredResult> => {
+      let passes = 1;
+      if (typeof options?.passes === 'number') {
+        passes = options.passes;
+      } else if (typeof methodIdOrPasses === 'number') {
+        passes = methodIdOrPasses;
+      } else if (typeof methodIdOrPasses === 'string') {
+        const found = SHRED_METHODS.find((m) => m.id === methodIdOrPasses);
+        passes = found ? found.passes : 1;
       }
+
+      // Pass-count validation: integer 1–3 only (rejected at the plan boundary)
+      assertValidPassCount(passes);
+
+      // 1. FRAMEWORK_PLAN: Create plan with open file check & irreversibility declaration
+      const plan = await createShredPlan(paths, passes);
+
+      if (plan.actions.length === 0) {
+        const blockedFailures = plan.blocked.map((b) => ({ target: b.target, error: b.reason }));
+        return {
+          success: false,
+          completed: 0,
+          failed: plan.blocked.length,
+          skipped: 0,
+          reclaimableBytes: null,
+          bytesWritten: 0,
+          shreddedCount: 0,
+          failures: blockedFailures,
+          message: plan.blocked[0]?.reason || 'No files could be planned for shredding.',
+        };
+      }
+
+      // 2. FRAMEWORK_EXECUTE: Run through the framework pipeline
+      const execResult = await executeOperationPlan(plan.id, (item) => logActivity(item as any));
+
+      const totalFailed = execResult.failed + plan.blocked.length;
+      const allSuccess = execResult.success && plan.blocked.length === 0;
+      const allFailures = [
+        ...execResult.failures,
+        ...plan.blocked.map((b) => ({ target: b.target, error: b.reason })),
+      ];
+
+      return {
+        ...execResult,
+        success: allSuccess,
+        completed: execResult.completed,
+        failed: totalFailed,
+        shreddedCount: execResult.completed, // Per-file accounting: count successes, not inputs
+        failures: allFailures,
+      };
     }
+  );
 
-    logActivity({
-      module: 'secure-erase',
-      title: 'Secure File Shredding',
-      detail: `Shredded ${paths.length} items using ${method.name} (${method.passes} passes)`,
-      type: 'warning',
-    });
+  ipcMain.handle(
+    IPC_CHANNELS.WIPE_FREE_SPACE,
+    async (
+      _,
+      driveLetter: string,
+      methodIdOrPasses?: ShredMethodId | number,
+      options?: Partial<WipeOptions>
+    ): Promise<WipeResult> => {
+      const volumeRoot = options?.volumeRoot || driveLetter || 'C';
 
-    return {
-      success: true,
-      shreddedCount: paths.length,
-    };
-  });
+      // 1. FRAMEWORK_PLAN: Check free space threshold & calculate headroom floor
+      const plan = await createFreeSpaceWipePlan(volumeRoot);
 
-  ipcMain.handle(IPC_CHANNELS.WIPE_FREE_SPACE, async (_, driveLetter: string, methodId: ShredMethodId) => {
-    const method = SHRED_METHODS.find((m) => m.id === methodId) || SHRED_METHODS[0];
-    logActivity({
-      module: 'secure-erase',
-      title: 'Free Space Wiped',
-      detail: `Completed ${method.passes}-pass wipe on drive ${driveLetter}`,
-      type: 'success',
-    });
-    return { success: true, wipedBytes: 10 * 1024 * 1024 * 1024 };
+      if (plan.actions.length === 0 && plan.blocked.length > 0) {
+        const refusalReason = plan.blocked[0].reason;
+        return {
+          success: false,
+          completed: 0,
+          failed: 1,
+          skipped: 0,
+          reclaimableBytes: null,
+          bytesWritten: 0,
+          wipedBytes: 0,
+          failures: [{ target: volumeRoot, error: refusalReason }],
+          message: refusalReason,
+        };
+      }
+
+      // 2. FRAMEWORK_EXECUTE: Execute free-space wipe through framework pipeline
+      const execResult = await executeOperationPlan(plan.id, (item) => logActivity(item as any));
+
+      return {
+        ...execResult,
+        wipedBytes: execResult.bytesWritten ?? 0,
+      };
+    }
+  );
+
+  ipcMain.handle(IPC_CHANNELS.SHRED_IS_SSD, async (_, targetPath: string): Promise<boolean | null> => {
+    return isTargetSsd(targetPath);
   });
 
   // --- Settings ---

@@ -52,6 +52,7 @@ export interface ExecuteResult {
   failures: ExecuteFailure[];
   backupPath?: string;
   message?: string;
+  bytesWritten?: number;
 }
 
 export interface BackupMetadata {

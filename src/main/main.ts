@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { setupIpcHandlers } from './ipc';
+import { sweepLeftoverWipeFiles } from './system/secureErase';
 
 const logFile = path.join(app.getPath('userData'), 'desk_klean_debug.log');
 const rootLogFile = 'E:\\Coding\\antigravity-projects\\DeskKlean\\debug.log';
@@ -166,6 +167,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(() => {
     debugLog('app.whenReady resolved');
+    sweepLeftoverWipeFiles().catch((err) => debugLog('sweepLeftoverWipeFiles error: ' + err));
     createWindow();
 
     app.on('activate', () => {
