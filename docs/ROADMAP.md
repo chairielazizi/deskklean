@@ -26,9 +26,8 @@ These are working agreements, not suggestions.
 
 ## 2. Current state
 
-41 IPC handlers across 12 feature modules. **Phases 0–12 are real.** The only
-remaining fiction is SecureErase's free-space wipe, ExtensionManager (unstarted),
-and SecureErase free-space wipe, ExtensionManager (unstarted).
+41 IPC handlers across 12 feature modules. **Phases 0–14 are real.** All
+modules have active system integrations with real query and execution paths.
 
 ### Real
 
@@ -46,19 +45,12 @@ and SecureErase free-space wipe, ExtensionManager (unstarted).
 | DiskAnalyzer | ✅ honest sizes — percentages against `scannedBytes`, reparse points distinguished escape-vs-skip |
 | DuplicateFinder | ✅ scan + delete — content-proven grouping, keep-copy guards, Recycle Bin via `trashItem` + PowerShell fallback |
 | AppRemover | ✅ real registry enumeration, `uninstall` action kind, verification by re-enumeration |
+| ExtensionManager | ✅ read-only enumeration across Chromium & Firefox profiles, D-R2-7 read-only integrity, native deep-linking |
+| SecureErase | ✅ file shredder + honest free-space wipe with headroom floor & SSD honesty |
 
-### Still fiction — 3 handlers, 3 modules
+### Completed Fiction Retirement
 
-| Module | What it does now |
-|---|---|
-| SecureErase `WIPE_FREE_SPACE` | Logs "Free Space Wiped" and records it in the activity log **without touching the disk**. `SHRED_ITEMS` is half-real (overwrites real bytes, capped at 3 passes). |
-| ExtensionManager | Hardcoded `browserExtensions` array. **No module directory exists — Phase 13 is unstarted.** |
-| StartupOptimizer `SET_DELAY` | ❌ removed — steps 1-8 implemented |
-
-**The one that matters most:** `WIPE_FREE_SPACE` reports success for work not
-performed, and the activity log records it as completed. A user reads "10 GB wiped"
-and believes their data is gone when it is not. For SecureErase that is a security
-claim, not a cosmetic one — which is why Phase 14 comes next.
+All twelve modules now have real system implementations. The previous mock handlers in `src/main/ipc.ts` (including `WIPE_FREE_SPACE`, `browserExtensions`, and `SET_DELAY`) have been fully retired and replaced with real system query and framework execution paths.
 
 ---
 
