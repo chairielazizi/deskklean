@@ -98,6 +98,19 @@ export interface WalkOptions {
   env?: NodeJS.ProcessEnv;
   scanRootOverride?: string;
   customExcludedPaths?: string[];
+  /**
+   * Probe used to determine whether a file can be opened for reading.
+   * Defaults to opening the file with 'r' and closing it immediately.
+   * Injectable so tests can simulate an in-use file deterministically on any
+   * platform -- Windows ACL denial (icacls /deny) is privilege-dependent and
+   * does not block an elevated process.
+   */
+  fileAccessProbe?: (filePath: string) => Promise<void>;
+}
+
+async function defaultFileAccessProbe(filePath: string): Promise<void> {
+  const handle = await fs.promises.open(filePath, 'r');
+  await handle.close();
 }
 
 /**
@@ -309,8 +322,8 @@ export async function scanCategory(
 
         try {
           const stat = await fs.promises.stat(childPath);
-          const handle = await fs.promises.open(childPath, 'r');
-          await handle.close();
+          const probe = options.fileAccessProbe ?? defaultFileAccessProbe;
+          await probe(childPath);
           files.push({ path: childPath, sizeBytes: stat.size });
         } catch (err: unknown) {
           const errorMsg = err instanceof Error ? err.message : String(err);

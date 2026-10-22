@@ -409,14 +409,10 @@ async function runTests() {
       const size3 = fs.statSync(file3).size;
       const expectedBytes = size1 + size3;
 
-      // Make file2 unreadable/locked to simulate an in-use or inaccessible file
-      if (process.platform === 'win32') {
-        const { execSync } = require('child_process');
-        execSync(`icacls "${file2}" /deny Everyone:(F)`, { stdio: 'ignore' });
-      } else {
-        fs.chmodSync(file2, 0o000);
-      }
-
+      // Simulate an in-use file deterministically. Windows ACL denial
+      // (icacls /deny Everyone) is privilege-dependent -- it does not block an
+      // elevated process, so it fails on CI runners -- so inject the probe
+      // instead of relying on host ACL behaviour.
       const res = await scanCategory({
         id: 'test-locked-tree',
         name: 'Tree With In-Use File',
@@ -428,6 +424,14 @@ async function runTests() {
         verdict: 'SAFE',
         source: 'https://learn.microsoft.com',
         deletionMethod: 'permanent',
+      }, {
+        fileAccessProbe: async (filePath) => {
+          if (filePath === file2) {
+            const err = new Error('Access is denied.');
+            err.code = 'EACCES';
+            throw err;
+          }
+        },
       });
 
       assert(
@@ -460,16 +464,6 @@ async function runTests() {
         '9f. skippedFiles records the exact path of the in-use file'
       );
     } finally {
-      if (process.platform === 'win32') {
-        try {
-          const { execSync } = require('child_process');
-          execSync(`icacls "${file2}" /grant Everyone:(F)`, { stdio: 'ignore' });
-        } catch {}
-      } else {
-        try {
-          fs.chmodSync(file2, 0o666);
-        } catch {}
-      }
       fs.rmSync(testDir, { recursive: true, force: true });
     }
   }
