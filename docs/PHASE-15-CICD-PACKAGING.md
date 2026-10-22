@@ -1,23 +1,43 @@
-# Phase 15 — CI/CD, Packaging and Releases
+# Phase 15b — Packaging and Releases
 
 **Status:** 🔜 specified, not built
-**Depends on:** All prior phases. This phase does not add a feature; it adds the pipeline that delivers the product.
+**Depends on:** Phase 15a (CI workflow) ✅ — the pipeline must exist before packaging lands, so a packaging change cannot silently break the build.
 **Decision:** D-R2-8 — versioning: patch for a fix, minor when a module becomes real, major for a breaking change to stored data or the settings shape. 1.0.0 when every module is real. Each phase ends with a tag and a release.
+**Supersedes:** nothing. This document is the packaging half of the original Phase 15; the CI half is now `PHASE-15A-CI-WORKFLOW.md`.
 
 ## Goal
 
-Establish the CI/CD pipeline, electron-builder packaging targets and release
-process for DeskKlean. This phase covers:
+Turn the working application into something a user can install. This phase covers:
 
-1. A GitHub Actions workflow on `windows-latest` that type-checks, runs
-   pure-logic tests, and builds the app.
-2. electron-builder targets (NSIS installer + portable) and what the
-   portable target implies for runtime paths.
-3. Code signing and what happens without it.
-4. The versioning and release process per D-R2-8.
+1. electron-builder targets (NSIS installer + portable) and what the portable target implies for runtime paths.
+2. Code signing and what happens without it.
+3. The versioning and release process per D-R2-8.
 
-No CI or packaging step has been run. This document specifies what the
-pipeline will do; it does not claim any of it has worked.
+The CI workflow that builds and tests on every push is **Phase 15a** and is
+already specified separately. This phase does not redefine it.
+
+---
+
+## What already exists
+
+`electron-builder.yml` is already committed and already declares both targets:
+
+```yaml
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: resources/icon.ico
+  requestedExecutionLevel: asInvoker
+```
+
+`resources/icon.ico` exists (285 KB). The `release/` output directory has been
+written to before (it contains `builder-debug.yml` and
+`builder-effective-config.yaml`), which means an `electron-builder` run has
+been attempted on this machine — but **no artefact is committed and no release
+has been made**. Treat the config as unproven.
 
 ---
 
@@ -30,87 +50,61 @@ pipeline will do; it does not claim any of it has worked.
 | Major | A breaking change to stored data or the settings shape |
 | 1.0.0 | Every module is real |
 
-Version is stored in `package.json` and mirrored in the app's settings
-schema. Tags follow `v<semver>` (e.g. `v0.2.0`). Each phase ends with a
-tag and a GitHub Release.
+Version is stored in `package.json`. Tags follow `v<semver>` (e.g. `v0.2.0`).
+Each phase ends with a tag and a GitHub Release.
+
+**`package.json` already has `"version": "1.0.0"`.** Do not add a version field,
+and do not bump it silently. `1.0.0` is the version D-R2-8 reserves for "every
+module is real" — which is now true. The first release uses it. If a release
+requires a bump, record the reasoning in the release notes.
 
 ---
 
-## GitHub Actions workflow
+## Portable target: runtime path implications
 
-### Trigger
-
-- On every push to `main`: run the pipeline (type-check, tests, build).
-- On every tag matching `v*`: run the pipeline and additionally create a
-  GitHub Release with the built artefacts.
-
-### Environment
-
-- Runner: `windows-latest` — the app is Windows-only; the pipeline must
-  run on Windows.
-- Node.js: the version specified in `.nvmrc` or `package.json`.
-
-### Steps
-
-| Step | What it does |
-|---|---|
-| 1. Checkout | `actions/checkout@v4` |
-| 2. Setup Node | `actions/setup-node@v4` with the Node version |
-| 3. Install dependencies | `npm ci` |
-| 4. Type-check | `npx tsc --noEmit` for both `tsconfig.main.json` and `tsconfig.renderer.json` |
-| 5. Pure-logic tests | `node scripts/test-*.mjs` — every `scripts/test-*.mjs` file |
-| 6. Build | `npm run dist` — electron-builder produces NSIS installer + portable |
-| 7. Upload artefacts | On tag: attach NSIS installer and portable ZIP to the GitHub Release |
-
-### What is NOT in the pipeline
-
-- **No Windows acceptance tests.** Those require the owner and real
-  hardware. The pipeline runs pure-logic tests only.
-- **No deployment.** There is no server to deploy to. The artefacts are
-  attached to GitHub Releases.
-
----
-
-## electron-builder targets
-
-### NSIS installer
-
-The primary distribution target. Produces a `.exe` installer that:
-
-- Installs to `%LOCALAPPDATA%\Programs\DeskKlean` (per-user, no admin required — this is the electron-builder NSIS default).
-- Creates Start Menu and desktop shortcuts.
-- Offers an optional desktop icon.
-
-### Portable target
-
-Produces a `.zip` containing a self-extracting portable build. The
-portable build **extracts to a temporary directory at runtime** and runs
+The portable build **extracts to a temporary directory at runtime** and runs
 the executable from there. This has a critical implication:
 
-**`process.execPath` in a portable build points at the extracted
-executable in the temp directory, not at the original archive.** When
-the app exits, the temp directory is deleted, so the path recorded in
-`process.execPath` becomes invalid.
+**`process.execPath` in a portable build points at the extracted executable in
+the temp directory, not at the original archive.** When the app exits, the temp
+directory is deleted, so the path recorded in `process.execPath` becomes invalid.
 
-electron-builder sets the `PORTABLE_EXECUTABLE_FILE` environment variable
-to the path of the original portable executable (the one the user
-double-clicked). This is the stable path; `process.execPath` is not.
+electron-builder sets the `PORTABLE_EXECUTABLE_FILE` environment variable to the
+path of the original portable executable (the one the user double-clicked). This
+is the stable path; `process.execPath` is not.
 
 **Implications:**
 
 - The elevation relaunch code (Phase 2) must use
   `process.env.PORTABLE_EXECUTABLE_FILE` when set, falling back to
   `process.execPath` otherwise.
-- Any code that persists the app's own path (e.g. for a "check for
-  updates" feature) must use `PORTABLE_EXECUTABLE_FILE`, not
-  `process.execPath`.
-- The Phase 2 elevation code already distinguishes packaged from
-  unpackaged; it must now also distinguish portable from
-  NSIS-installed.
+- Any code that persists the app's own path (e.g. for a "check for updates"
+  feature) must use `PORTABLE_EXECUTABLE_FILE`, not `process.execPath`.
+- The Phase 2 elevation code already distinguishes packaged from unpackaged; it
+  must now also distinguish portable from NSIS-installed.
 
-**UNVERIFIED:** The exact temp directory name and lifecycle of the
-portable extraction may vary by electron-builder version. The
-implementation must test this on the target machine.
+**Verify before implementing:** grep the Phase 2 elevation code and confirm
+whether it already reads `PORTABLE_EXECUTABLE_FILE`. If it does, this section is
+a no-op and must be recorded as such. If it does not, the change is required and
+must be tested on a real portable build.
+
+**Already verified — this section is a NO-OP.** `src/main/ipc.ts:861-862`
+already implements exactly this:
+
+```ts
+if (app.isPackaged && process.env.PORTABLE_EXECUTABLE_FILE) {
+  targetExe = process.env.PORTABLE_EXECUTABLE_FILE;
+}
+```
+
+`targetExe` defaults to `process.execPath` and is overridden only when the app
+is packaged *and* the portable env var is set. The portable path handling is
+done. **Do not modify `ipc.ts` for this.** The remaining Phase 15b work is to
+confirm it behaves correctly on a real portable build, not to write it.
+
+**UNVERIFIED:** The exact temp directory name and lifecycle of the portable
+extraction may vary by electron-builder version. The implementation must test
+this on the target machine.
 
 ---
 
@@ -118,15 +112,14 @@ implementation must test this on the target machine.
 
 ### What happens without a code signature
 
-Windows SmartScreen shows a blue "Windows protected your PC" warning when
-running an unsigned executable. The user must click "More info" → "Run
-anyway" to proceed. This warning appears for both the NSIS installer and
-the portable build.
+Windows SmartScreen shows a blue "Windows protected your PC" warning when running
+an unsigned executable. The user must click "More info" → "Run anyway" to
+proceed. This warning appears for both the NSIS installer and the portable build.
 
-The warning is not a one-time thing — it can reappear on each launch until
-the reputation system learns the binary, which requires significant install
-volume. For a small project, the warning is effectively permanent without
-a code-signing certificate.
+The warning is not a one-time thing — it can reappear on each launch until the
+reputation system learns the binary, which requires significant install volume.
+For a small project, the warning is effectively permanent without a code-signing
+certificate.
 
 ### Options
 
@@ -137,16 +130,15 @@ a code-signing certificate.
 | OV certificate (OV code signing) | ~$100–300/year | SmartScreen warning reduced or eliminated after reputation builds |
 | EV certificate (EV code signing) | ~$300–500/year | SmartScreen warning eliminated immediately |
 
-**OPEN QUESTION:** Whether to purchase a code-signing certificate, and
-which type, is the owner's decision. It depends on the project's
-distribution goals and budget. This phase does not decide it; it records
-the trade-off.
+**OPEN QUESTION:** Whether to purchase a code-signing certificate, and which
+type, is the owner's decision. It depends on the project's distribution goals
+and budget. This phase does not decide it; it records the trade-off.
 
 ### If no certificate is purchased
 
-The build succeeds without signing. The artefacts are valid; they just
-trigger SmartScreen. The release notes must state this plainly so users
-are not surprised.
+The build succeeds without signing. The artefacts are valid; they just trigger
+SmartScreen. The release notes must state this plainly so users are not
+surprised.
 
 ---
 
@@ -155,16 +147,16 @@ are not surprised.
 Recorded as an open option, not a decision.
 
 A packaged production build could declare `requireAdministrator` in its
-application manifest so Windows prompts for elevation before the process
-starts. This would replace the Phase 2 relaunch code entirely.
+application manifest so Windows prompts for elevation before the process starts.
+This would replace the Phase 2 relaunch code entirely.
 
 **Why this cannot work in development:**
 
-- Dev mode runs `electron.exe` (the Electron runtime), not the app's own
-  binary. The manifest of `electron.exe` is controlled by Electron, not
-  by DeskKlean. We cannot add `requireAdministrator` to it.
-- Therefore the relaunch code is required for development regardless of
-  what the packaged build does.
+- Dev mode runs `electron.exe` (the Electron runtime), not the app's own binary.
+  The manifest of `electron.exe` is controlled by Electron, not by DeskKlean. We
+  cannot add `requireAdministrator` to it.
+- Therefore the relaunch code is required for development regardless of what the
+  packaged build does.
 
 **Trade-off recorded in Phase 2:**
 
@@ -176,10 +168,14 @@ starts. This would replace the Phase 2 relaunch code entirely.
 | Read-only browsing | Not available without elevation | Available when declined |
 
 This remains an open question. The relaunch code is built and works in both
-modes. Switching to a manifest at packaging time would remove the
-"continue without administrator" option and would still require the
-relaunch code for development. Whether that trade-off is worth it is the
-owner's call.
+modes. Switching to a manifest at packaging time would remove the "continue
+without administrator" option and would still require the relaunch code for
+development. Whether that trade-off is worth it is the owner's call.
+
+**Note:** `electron-builder.yml` currently sets
+`requestedExecutionLevel: asInvoker`, which is consistent with the relaunch
+design and inconsistent with OQ-5. That is deliberate; changing it is a decision,
+not an oversight.
 
 ---
 
@@ -200,8 +196,8 @@ Each phase that lands ends with:
 ### Release checklist
 
 - [ ] Version bumped in `package.json`
-- [ ] Both `tsc` configs clean
-- [ ] All `scripts/test-*.mjs` pass
+- [ ] Both `tsc` configs clean (`tsconfig.main.json` and `tsconfig.json`)
+- [ ] All `scripts/test-*.mjs` pass, **excluding `test-phase2-live.mjs`** (it mutates the real registry and is owner-run only)
 - [ ] Build produces NSIS + portable artefacts
 - [ ] Release notes written, including honest statements about what is still mock
 - [ ] If a code-signing certificate is configured, artefacts are signed
@@ -212,33 +208,42 @@ Each phase that lands ends with:
 ## Files
 
 ```
-.github/workflows/ci.yml       NEW  — GitHub Actions workflow
-electron-builder.yml (or package.json 'build' key)  EDIT — portable target config,
-                                                      NSIS config
-scripts/test-*.mjs               (existing) — must all pass in CI
+electron-builder.yml        EDIT — only if a real build shows a config gap
+package.json                ✅ already has "version": "1.0.0" — do not add or bump silently
+src/main/ipc.ts             ✅ already handles PORTABLE_EXECUTABLE_FILE — do not modify
+docs/PHASE-15A-CI-WORKFLOW.md  ✅ already specified
 ```
+
+**No application source changes are expected in this phase.** The two changes
+the original spec implied — portable path handling and the version field — both
+already exist. If a real build shows a genuine gap, record it; otherwise this
+phase is configuration, a build, and a release.
 
 ---
 
 ## Implementation order
 
-1. GitHub Actions workflow — checkout, setup, install, type-check, tests, build.
-2. electron-builder portable target config — ensure `PORTABLE_EXECUTABLE_FILE` is respected.
-3. Release process documentation — the checklist above becomes the template for each release.
+1. **Verify the portable path handling first — ALREADY DONE.** `src/main/ipc.ts:861-862`
+   already reads `PORTABLE_EXECUTABLE_FILE`. Recorded; no change required.
+2. Confirm `electron-builder.yml` produces both targets by running `npm run dist`.
+3. Perform the first tagged release at `v1.0.0` following the checklist. The
+   version field already exists.
 
 ---
 
 ## Verification
 
-This phase is infrastructure, not code. Verification is:
+This phase is packaging, not code. Verification is:
 
-- The workflow file is valid YAML.
-- The workflow file references the correct scripts (`scripts/test-*.mjs`).
-- The electron-builder config produces both targets.
-- The release checklist is followed for the first tagged release.
+- [ ] `npm run dist` produces both `release/*.exe` (NSIS) and `release/*.zip` (portable).
+- [ ] The portable build launches and the elevation relaunch resolves the correct executable path.
+- [ ] The portable build's temp directory is cleaned up on exit.
+- [ ] The NSIS installer installs to `%LOCALAPPDATA%\Programs\DeskKlean` without requiring admin.
+- [ ] The release checklist is followed for the first tagged release.
+- [ ] Release notes state plainly whether SmartScreen will warn.
 
-**Nothing in this phase has been run.** The pipeline is specified, not
-proven. The first real run will be on the first tagged release.
+**Nothing in this phase has been run.** The pipeline is specified, not proven.
+The first real run will be the first tagged release.
 
 ---
 
@@ -248,6 +253,7 @@ proven. The first real run will be on the first tagged release.
 |---|---|
 | Portable build's `process.execPath` breaks elevation | Use `PORTABLE_EXECUTABLE_FILE` env var; test on target machine |
 | electron-builder portable extraction path varies | Test on target machine; do not hard-code temp paths |
-| CI fails silently (tests not actually run) | The workflow must fail the step if any test exits non-zero |
+| CI fails silently (tests not actually run) | Phase 15a's workflow fails the step if any test exits non-zero |
 | Unsigned build triggers SmartScreen alarm | State this in release notes; consider a certificate if the project matures |
 | Version bumps are forgotten | The release checklist enforces it; CI could check that `package.json` matches the tag |
+| The Phase 2 elevation code is changed without being read first | The implementation order makes the grep step explicit and requires the finding to be recorded |
