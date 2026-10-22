@@ -112,12 +112,18 @@ export async function getDiskMeasurements(
  * @param gpuModel - Optional GPU model name to match against DriverDesc
  * @returns 64-bit VRAM in MB, or null if unreadable
  */
-export async function getGpuVram64BitMb(gpuModel?: string): Promise<number | null> {
-  if (process.platform !== 'win32') return null;
+export interface GpuVramQueryOptions {
+  /**
+   * Returns the raw output of the registry query used to read VRAM.
+   * Defaults to shelling out to reg.exe. Injectable so tests can supply a
+   * deterministic registry dump without depending on the host GPU.
+   */
+  regQuery?: () => Promise<string | null>;
+}
 
+async function defaultRegQuery(): Promise<string | null> {
   const { execFile } = await import('child_process');
-
-  return new Promise<number | null>((resolve) => {
+  return new Promise<string | null>((resolve) => {
     execFile(
       'reg.exe',
       [
@@ -128,33 +134,45 @@ export async function getGpuVram64BitMb(gpuModel?: string): Promise<number | nul
       { maxBuffer: 10 * 1024 * 1024, timeout: 3000 },
       (err, stdout) => {
         if (err || !stdout) return resolve(null);
-        const sections = stdout.split(/\r?\n\r?\n/);
-        let fallbackMb: number | null = null;
-        for (const sec of sections) {
-          const descMatch = sec.match(/DriverDesc\s+REG_SZ\s+(.+)/);
-          const qwMatch = sec.match(
-            /HardwareInformation\.qwMemorySize\s+REG_QWORD\s+0x([0-9a-fA-F]+)/
-          );
-          if (qwMatch) {
-            const bytes = parseInt(qwMatch[1], 16);
-            if (Number.isFinite(bytes) && bytes > 0) {
-              const mb = Math.round(bytes / (1024 * 1024));
-              if (
-                descMatch &&
-                gpuModel &&
-                descMatch[1].trim().toLowerCase() === gpuModel.trim().toLowerCase()
-              ) {
-                return resolve(mb);
-              }
-              if (fallbackMb === null) {
-                fallbackMb = mb;
-              }
-            }
-          }
-        }
-        resolve(fallbackMb);
+        resolve(stdout);
       }
     );
   });
+}
+
+export async function getGpuVram64BitMb(
+  gpuModel?: string,
+  options: GpuVramQueryOptions = {}
+): Promise<number | null> {
+  if (process.platform !== 'win32') return null;
+
+  const stdout = await (options.regQuery ?? defaultRegQuery)();
+  if (!stdout) return null;
+
+  const sections = stdout.split(/\r?\n\r?\n/);
+  let fallbackMb: number | null = null;
+  for (const sec of sections) {
+    const descMatch = sec.match(/DriverDesc\s+REG_SZ\s+(.+)/);
+    const qwMatch = sec.match(
+      /HardwareInformation\.qwMemorySize\s+REG_QWORD\s+0x([0-9a-fA-F]+)/
+    );
+    if (qwMatch) {
+      const bytes = parseInt(qwMatch[1], 16);
+      if (Number.isFinite(bytes) && bytes > 0) {
+        const mb = Math.round(bytes / (1024 * 1024));
+        if (
+          descMatch &&
+          gpuModel &&
+          descMatch[1].trim().toLowerCase() === gpuModel.trim().toLowerCase()
+        ) {
+          return mb;
+        }
+        if (fallbackMb === null) {
+          fallbackMb = mb;
+        }
+      }
+    }
+  }
+  return fallbackMb;
 }
 

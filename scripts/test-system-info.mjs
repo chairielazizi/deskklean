@@ -214,7 +214,18 @@ console.log('\n=== Section 6: Disk Performance Counter Normalization & MB Scalin
 console.log('\n=== Section 7: GPU 64-bit VRAM Resolution ===\n');
 
 if (process.platform === 'win32') {
-  const vram = await systemInfo.getGpuVram64BitMb('AMD Radeon RX 9060 XT');
+  // Inject a deterministic registry dump. Querying the real registry makes the
+  // test depend on the host GPU -- it only passes on a machine with a 16 GB card.
+  const fakeRegOutput = [
+    '',
+    'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0000',
+    '    DriverDesc    REG_SZ    AMD Radeon RX 9060 XT',
+    '    HardwareInformation.qwMemorySize    REG_QWORD    0x3fb000000',
+    '',
+  ].join('\r\n');
+  const vram = await systemInfo.getGpuVram64BitMb('AMD Radeon RX 9060 XT', {
+    regQuery: async () => fakeRegOutput,
+  });
   assert(vram !== null && vram > 4095, `7a. Resolves 64-bit VRAM beyond 4095 MB clamp (got ${vram} MB)`);
   assert(vram >= 15000 && vram <= 18000, '7b. 16 GB GPU falls in expected range (~16304 MB)');
 } else {
