@@ -4,8 +4,9 @@ copyright: Copyright © 2026 DeskKlean Team
 
 # electron-builder's own publishing is disabled: releases are created by the CI
 # workflow (softprops/action-gh-release) using the automatic GITHUB_TOKEN.
-# Without this, a tagged build fails with "GitHub Personal Access Token is not set".
-publish: never
+# `null` (not "never") is the value that disables it -- a string is treated as a
+# provider name, which fails with "Cannot find module 'electron-publisher-never'".
+publish: null
 
 directories:
   output: release
