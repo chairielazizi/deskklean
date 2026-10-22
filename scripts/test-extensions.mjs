@@ -456,6 +456,7 @@ async function runTests() {
   // When firefox.exe cannot be located, returns { success: false, reason }
   const ffMissingExe = await openExtensionPage('firefox', {
     customBaseDirs: { firefox: mockRootDir }, // directory exists so installed = true
+    locateFirefoxExe: () => null, // hermetic: never probe the host for firefox.exe
   });
   assert(ffMissingExe.success === false, '10g. Firefox launch fails when firefox.exe cannot be found');
   assert(typeof ffMissingExe.reason === 'string', '10h. Explanatory reason returned for missing firefox.exe');

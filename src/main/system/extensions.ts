@@ -785,6 +785,7 @@ export async function openExtensionPage(
     shellOpenExternal?: (url: string) => Promise<void>;
     spawnFn?: typeof spawn;
     firefoxExePath?: string;
+    locateFirefoxExe?: () => string | null;
   }
 ): Promise<ExtensionOpenResult> {
   // Check if browser is installed
@@ -796,7 +797,8 @@ export async function openExtensionPage(
   }
 
   if (browser === 'firefox') {
-    const firefoxExe = options?.firefoxExePath ?? locateFirefoxExecutable();
+    const locateFirefoxExe = options?.locateFirefoxExe ?? locateFirefoxExecutable;
+    const firefoxExe = options?.firefoxExePath ?? locateFirefoxExe();
     if (!firefoxExe) {
       return {
         success: false,
