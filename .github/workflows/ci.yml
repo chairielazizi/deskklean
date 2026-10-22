@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    name: Build & Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install
+        run: npm ci
+
+      - name: Type-check main
+        run: npx tsc -p tsconfig.main.json --noEmit
+
+      - name: Type-check renderer
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Build main
+        run: npm run build:main
+
+      - name: Pure-logic tests
+        shell: bash
+        run: |
+          set -e
+          for f in scripts/test-*.mjs; do
+            case "$f" in
+              *test-phase2-live.mjs) continue ;;
+            esac
+            echo "--- $f"
+            node "$f"
+          done
+
+      - name: Build renderer
+        run: npm run build:renderer
+
+      - name: Package
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm run dist
+
+      - name: Upload build artefacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artefacts
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: warn
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: |
+            release/*.exe
+            release/*.zip
+          fail_on_unmatched_files: false
