@@ -67,6 +67,7 @@ import {
   getAllInstalledApps,
   createAppUninstallPlan,
   createRemoveAppRegistryEntryPlan,
+  invalidateAppCache,
 } from './system/appRemover';
 import {
   getExtensions,
@@ -1040,9 +1041,12 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // --- App Remover ---
-  ipcMain.handle(IPC_CHANNELS.APPS_GET_INSTALLED, async (): Promise<InstalledApp[]> => {
-    return getAllInstalledApps();
-  });
+  ipcMain.handle(
+    IPC_CHANNELS.APPS_GET_INSTALLED,
+    async (_, forceRefresh?: boolean): Promise<InstalledApp[]> => {
+      return getAllInstalledApps({ forceRefresh });
+    }
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.APPS_UNINSTALL,

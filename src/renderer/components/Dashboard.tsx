@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { api } from '../apiClient';
-import { ModuleId, ActivityItem, SystemSpecs, StartupItem, SmartCleanReport } from '../../shared/types';
+import { ModuleId, ActivityItem, SystemSpecs, StartupItem, SmartCleanReport, HealthReport } from '../../shared/types';
 import { formatBytes, formatDate } from '../utils/format';
 import { dataCache } from '../utils/dataCache';
 import {
@@ -37,11 +37,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [smartCleanReport, setSmartCleanReport] = useState<SmartCleanReport | null>(() => dataCache.getSmartCleanReport());
   const [startupItems, setStartupItems] = useState<StartupItem[] | null>(() => dataCache.getStartupItems());
+  const [healthReport, setHealthReport] = useState<HealthReport | null>(() => dataCache.getHealthReport());
 
   useEffect(() => {
     const unsub = dataCache.subscribe(() => {
       setSmartCleanReport(dataCache.getSmartCleanReport());
       setStartupItems(dataCache.getStartupItems());
+      setHealthReport(dataCache.getHealthReport());
     });
 
     const loadData = async () => {
@@ -57,6 +59,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
         if (!dataCache.getStartupItems()) {
           api.getStartupItems().then((items) => {
             dataCache.setStartupItems(items);
+          }).catch(() => {});
+        }
+
+        // Populate health report into cache if missing
+        if (!dataCache.getHealthReport()) {
+          api.getHealthReport().then((report) => {
+            if (report) {
+              dataCache.setHealthReport(report);
+            }
           }).catch(() => {});
         }
       } catch (e) {
@@ -82,14 +93,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const [sysSpecs, logs, t] = await Promise.all([
+      const [sysSpecs, logs, t, health] = await Promise.all([
         api.getSystemSpecs(),
         api.getActivityLogs(),
         api.getTelemetry(),
+        api.getHealthReport().catch(() => null),
       ]);
       setSpecs(sysSpecs);
       setActivities(logs);
       setTelemetry(t);
+      if (health) dataCache.setHealthReport(health);
     } catch (e) {}
     setTimeout(() => setIsRefreshing(false), 500);
   };
@@ -101,6 +114,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const totalBootDegradation = startupItems
     ? startupItems.filter((item) => item.enabled).reduce((sum, item) => sum + (item.estimatedBootImpactMs ?? 0), 0)
     : null;
+
+  const healthScore = healthReport?.score ?? null;
 
   const primaryDrive = specs?.drives?.[0] || {
     label: 'Local Disk (C:)',
@@ -124,17 +139,58 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-5">
             {/* Score Ring */}
-            <div className="relative w-24 h-24 flex items-center justify-center rounded-2xl bg-slate-950/80 border border-emerald-500/30 shadow-inner shadow-emerald-950/50">
+            <div
+              className={`relative w-24 h-24 flex items-center justify-center rounded-2xl bg-slate-950/80 border ${
+                healthScore !== null
+                  ? healthScore >= 80
+                    ? 'border-emerald-500/30 shadow-emerald-950/50'
+                    : healthScore >= 60
+                    ? 'border-amber-500/30 shadow-amber-950/50'
+                    : 'border-rose-500/30 shadow-rose-950/50'
+                  : 'border-slate-800'
+              } shadow-inner`}
+            >
               <div className="text-center">
-                <span className="text-3xl font-black tracking-tight text-white font-mono">84</span>
-                <span className="block text-[10px] font-semibold text-emerald-400 uppercase tracking-wider">Health</span>
+                <span className="text-3xl font-black tracking-tight text-white font-mono">
+                  {healthScore !== null ? healthScore : '--'}
+                </span>
+                <span
+                  className={`block text-[10px] font-semibold uppercase tracking-wider ${
+                    healthScore !== null && healthScore < 60
+                      ? 'text-rose-400'
+                      : healthScore !== null && healthScore < 80
+                      ? 'text-amber-400'
+                      : 'text-emerald-400'
+                  }`}
+                >
+                  Hygiene
+                </span>
               </div>
-              <div className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-slate-900 animate-pulse" />
+              {healthScore !== null && (
+                <div
+                  className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-slate-900 animate-pulse ${
+                    healthScore >= 80
+                      ? 'bg-emerald-500'
+                      : healthScore >= 60
+                      ? 'bg-amber-500'
+                      : 'bg-rose-500'
+                  }`}
+                />
+              )}
             </div>
 
             <div className="space-y-1">
               <div className="flex items-center gap-2">
-                <h2 className="text-xl font-bold text-white tracking-tight">System Status: Good</h2>
+                <h2 className="text-xl font-bold text-white tracking-tight">
+                  System Hygiene:{' '}
+                  {healthScore !== null
+                    ? healthScore >= 80
+                      ? 'Good'
+                      : healthScore >= 60
+                      ? 'Fair'
+                      : 'Needs Attention'
+                    : 'Measuring...'}
+                </h2>
                 <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                   Ready to optimize
                 </span>

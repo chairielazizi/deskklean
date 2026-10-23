@@ -518,7 +518,7 @@ const mockAPI: DeskKleanAPI = {
     message: 'Operation executed successfully.',
   }),
 
-  getInstalledApps: async (): Promise<InstalledApp[]> => [
+  getInstalledApps: async (_forceRefresh?: boolean): Promise<InstalledApp[]> => [
     {
       id: '{B627197A-DB71-4628-98CA-0988ED7715DA}',
       name: 'Google Chrome',

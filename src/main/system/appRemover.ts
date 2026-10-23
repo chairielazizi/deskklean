@@ -632,18 +632,52 @@ export async function enumerateStoreApps(options?: {
   }
 }
 
+// In-memory cache for installed apps enumeration (2-minute TTL)
+let appCache: {
+  timestamp: number;
+  apps: InstalledApp[];
+} | null = null;
+
+const APP_CACHE_TTL_MS = 120_000;
+
+export function invalidateAppCache(): void {
+  appCache = null;
+}
+
 /**
  * Combined enumeration: reads registry apps and store apps.
+ * Caches results in-memory for 2 minutes unless forceRefresh is true.
  */
 export async function getAllInstalledApps(options?: {
   runPowerShellFn?: (s: string) => Promise<string>;
   fileExists?: (p: string) => boolean;
+  forceRefresh?: boolean;
 }): Promise<InstalledApp[]> {
+  const isDefaultRunners = !options?.runPowerShellFn && !options?.fileExists;
+
+  if (
+    isDefaultRunners &&
+    !options?.forceRefresh &&
+    appCache &&
+    Date.now() - appCache.timestamp < APP_CACHE_TTL_MS
+  ) {
+    return appCache.apps;
+  }
+
   const [registryApps, storeApps] = await Promise.all([
     enumerateRegistryApps(options).catch(() => []),
     enumerateStoreApps(options).catch(() => []),
   ]);
-  return [...registryApps, ...storeApps];
+  const result = [...registryApps, ...storeApps];
+
+  if (isDefaultRunners && result.length > 0) {
+    appCache = {
+      timestamp: Date.now(),
+      apps: result,
+    };
+  }
+
+  return result;
 }
 
 // =====================================================================

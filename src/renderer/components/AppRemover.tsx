@@ -16,6 +16,7 @@ import {
   Info,
   ShieldAlert,
   X,
+  RefreshCw,
 } from 'lucide-react';
 
 export const AppRemover: React.FC = () => {
@@ -42,10 +43,10 @@ export const AppRemover: React.FC = () => {
     rebootRequired?: boolean;
   } | null>(null);
 
-  const loadApps = async () => {
+  const loadApps = async (forceRefresh = false) => {
     setIsLoading(true);
     try {
-      const result = await api.getInstalledApps();
+      const result = await api.getInstalledApps(forceRefresh);
       setApps(result);
     } catch (e) {
       console.error('Failed to load installed apps:', e);
@@ -77,7 +78,7 @@ export const AppRemover: React.FC = () => {
         verified: result.verified,
         rebootRequired: result.rebootRequired,
       });
-      await loadApps();
+      await loadApps(true);
     } catch (e) {
       setUninstallResult({
         id: target.id,
@@ -114,7 +115,7 @@ export const AppRemover: React.FC = () => {
           verified: result.verified,
         });
       }
-      await loadApps();
+      await loadApps(true);
     } catch (e) {
       setUninstallResult({
         id: target.id,
@@ -242,6 +243,16 @@ export const AppRemover: React.FC = () => {
                 {s.charAt(0).toUpperCase() + s.slice(1)}
               </button>
             ))}
+
+            {/* Refresh Button */}
+            <button
+              onClick={() => loadApps(true)}
+              disabled={isLoading}
+              title="Rescan installed applications"
+              className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-colors disabled:opacity-50 ml-1"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-violet-400' : ''}`} />
+            </button>
           </div>
         </div>
       </div>

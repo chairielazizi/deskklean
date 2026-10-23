@@ -28,6 +28,7 @@ import {
   checkPendingReboot,
   verifyAppRemoved,
   getAllInstalledApps,
+  invalidateAppCache,
 } from '../appRemover';
 import { InstalledApp } from '../../../shared/types';
 
@@ -1427,7 +1428,9 @@ export async function executeUninstallActions(
     try {
       const reEnumerated = runners?.reEnumerateFn
         ? await runners.reEnumerateFn()
-        : await getAllInstalledApps();
+        : await getAllInstalledApps({ forceRefresh: true });
+
+      invalidateAppCache();
 
       const verification = verifyAppRemoved(appId, reEnumerated, productCode);
 

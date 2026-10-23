@@ -665,7 +665,7 @@ export interface DeskKleanAPI {
   executeOperationPlan: (planId: string) => Promise<ExecuteResult>;
 
   // Apps
-  getInstalledApps: () => Promise<InstalledApp[]>;
+  getInstalledApps: (forceRefresh?: boolean) => Promise<InstalledApp[]>;
   uninstallApp: (appId: string, deepCleanLeftovers?: boolean) => Promise<AppUninstallResult>;
   planAppUninstall?: (appId: string) => Promise<OperationPlan>;
   removeAppRegistryEntry?: (appId: string) => Promise<ExecuteResult>;
