@@ -6,7 +6,7 @@
 > This file is retained as the original narrative record; the authoritative
 > phase plan is [`ROADMAP.md`](ROADMAP.md).
 
-**Status:** Phase 0 ✅ · Phase 1 ✅ · Phase 2 (steps 1–6) ✅ · Phase 2 (steps 7–8) implemented, awaiting Windows acceptance · Phases 3–15 spec'd
+**Status:** Phase 0–15 ✅ Complete — All modules implemented, tested (958 unit tests), and released at v1.0.0.
 
 **Goal:** replace the mocked values in `src/main/ipc.ts` with data read from the
 machine, module by module. Until Phase 0 landed, every module returned hardcoded

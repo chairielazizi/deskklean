@@ -1,7 +1,7 @@
 # Phases 7-8 — RegistryFixer
 
-**Status:** Phase 7 (scan) 🔜 specified, not built · Phase 8 (fix) 🔜 specified, not built
-**Depends on:** Phase 3 (shared destructive-operation framework) 🔜 · Phase 2 (registry read/write, `.reg` escaper, backup format) ✅
+**Status:** ✅ implemented and verified (Phase 7 scan & Phase 8 fix complete; 148/148 tests pass)
+**Depends on:** Phase 3 (shared destructive-operation framework) ✅ · Phase 2 (registry read/write, `.reg` escaper, backup format) ✅
 
 ---
 

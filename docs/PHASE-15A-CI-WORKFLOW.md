@@ -1,6 +1,6 @@
 # Phase 15a — CI Workflow
 
-**Status:** ✅ implemented and verified (local dry-run passed; awaiting first remote push)
+**Status:** ✅ implemented, verified, and executed live on GitHub Actions (v1.0.0 released)
 **Depends on:** Phases 0–14 ✅
 **Decision:** D-R2-8 — versioning: patch for a fix, minor when a module becomes real, major for a breaking change to stored data or the settings shape. 1.0.0 when every module is real.
 **Supersedes:** the "GitHub Actions workflow" half of `PHASE-15-CICD-PACKAGING.md`. That document now covers only Phase 15b (packaging + release).

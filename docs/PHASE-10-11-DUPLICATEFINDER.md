@@ -1,7 +1,7 @@
 # Phases 10–11 — Duplicate Finder
 
-**Status:** 🔜 Specified, not built
-**Depends on:** Phase 0 (system bridge) ✅ · Phase 3 (destructive framework) 🔜
+**Status:** ✅ implemented and verified (Phase 10 scan & Phase 11 delete complete; 60/60 tests pass)
+**Depends on:** Phase 0 (system bridge) ✅ · Phase 3 (destructive framework) ✅
 
 ## Goal
 

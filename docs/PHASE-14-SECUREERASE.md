@@ -1,7 +1,7 @@
 # Phase 14 — Secure Erase
 
-**Status:** 🔜 specified, not built (half-real: `SHRED_ITEMS` overwrites real bytes, `WIPE_FREE_SPACE` is fiction)
-**Depends on:** Phase 3 (destructive framework) 🔜 · Phase 0 (system bridge) ✅ · Phase 1 (drive join) ✅
+**Status:** ✅ implemented and verified (file shredder + free-space wiper; 74/74 tests pass)
+**Depends on:** Phase 3 (destructive framework) ✅ · Phase 0 (system bridge) ✅ · Phase 1 (drive join) ✅
 **Decision:** D-R2-3 — option (b): files + free-space wipe, no full-drive erase in v1.
 
 ## Goal

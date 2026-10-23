@@ -102,11 +102,11 @@ destructive. Each destructive module ships scan-first.
 | 10 | DuplicateFinder — scan | ✅ |
 | 11 | DuplicateFinder — delete | ✅ |
 | 12 | AppRemover | ✅ |
-| 13 | ExtensionManager — read-only | 📝 spec exists, unstarted |
-| 14 | SecureErase | 🔧 half-real — `SHRED_ITEMS` real, `WIPE_FREE_SPACE` fiction |
-| 15 | CI/CD, packaging, releases | 🔜 |
+| 13 | ExtensionManager — read-only | ✅ real multi-profile enumeration + native deep links (D-R2-7) |
+| 14 | SecureErase | ✅ file shredder + free-space wiper with headroom floor & SSD honesty |
+| 15 | CI/CD, packaging, releases | ✅ Phase 15a CI workflow + Phase 15b NSIS/portable packaging & v1.0.0 release |
 
-Phases 3–15 each get their own markdown spec before implementation.
+All phases 0–15 are fully implemented, verified, and released.
 
 ---
 

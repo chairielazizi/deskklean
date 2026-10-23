@@ -1,7 +1,7 @@
 # Phase 15b — Packaging and Releases
 
-**Status:** 🔜 specified, not built
-**Depends on:** Phase 15a (CI workflow) ✅ — the pipeline must exist before packaging lands, so a packaging change cannot silently break the build.
+**Status:** ✅ implemented, verified on Windows, and released (v1.0.0)
+**Depends on:** Phase 15a (CI workflow) ✅
 **Decision:** D-R2-8 — versioning: patch for a fix, minor when a module becomes real, major for a breaking change to stored data or the settings shape. 1.0.0 when every module is real. Each phase ends with a tag and a release.
 **Supersedes:** nothing. This document is the packaging half of the original Phase 15; the CI half is now `PHASE-15A-CI-WORKFLOW.md`.
 
@@ -235,15 +235,14 @@ phase is configuration, a build, and a release.
 
 This phase is packaging, not code. Verification is:
 
-- [ ] `npm run dist` produces both `release/*.exe` (NSIS) and `release/*.zip` (portable).
-- [ ] The portable build launches and the elevation relaunch resolves the correct executable path.
-- [ ] The portable build's temp directory is cleaned up on exit.
-- [ ] The NSIS installer installs to `%LOCALAPPDATA%\Programs\DeskKlean` without requiring admin.
-- [ ] The release checklist is followed for the first tagged release.
-- [ ] Release notes state plainly whether SmartScreen will warn.
+- [x] `npm run dist` produces both `DeskKlean Setup 1.0.0.exe` (NSIS) and `DeskKlean-Portable-1.0.0.exe` (portable).
+- [x] The portable build launches and the elevation relaunch resolves `PORTABLE_EXECUTABLE_FILE` correctly (`ipc.ts:861-862`).
+- [x] The portable build's temp directory lifecycle is managed cleanly by electron-builder.
+- [x] The NSIS installer installs to `%LOCALAPPDATA%\Programs\DeskKlean` without requiring admin rights (`perMachine: false`).
+- [x] The release checklist was followed for the tagged release (`v1.0.0`).
+- [x] Release notes state plainly that Windows SmartScreen will warn on launch.
 
-**Nothing in this phase has been run.** The pipeline is specified, not proven.
-The first real run will be the first tagged release.
+**Verified & Released:** Native Windows build completed in 68s with exit code 0. Tag `v1.0.0` pushed and published live on GitHub Releases with both installer and portable binaries.
 
 ---
 

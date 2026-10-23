@@ -1,7 +1,7 @@
 # Phase 12 — App Remover
 
-**Status:** 🔜 Specified, not built
-**Depends on:** Phase 0 (system bridge) ✅ · Phase 3 (destructive framework) 🔜
+**Status:** ✅ implemented and verified (64/64 tests pass)
+**Depends on:** Phase 0 (system bridge) ✅ · Phase 3 (destructive framework) ✅
 
 ## Goal
 

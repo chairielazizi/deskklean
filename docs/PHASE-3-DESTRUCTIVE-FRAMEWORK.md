@@ -3,7 +3,7 @@
 The keystone phase. Six modules destroy data; none of them gets to invent its own
 backup, confirmation or verification logic. They all plug into this.
 
-Status: 🔜 specified, not built. Blocks phases 6, 8, 11, 12, 14.
+Status: ✅ implemented and verified (powers Phases 5, 6, 8, 11, 12, 14)
 
 ---
 

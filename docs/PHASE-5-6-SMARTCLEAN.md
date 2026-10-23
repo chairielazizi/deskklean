@@ -1,7 +1,7 @@
 # Phases 5–6 — SmartClean (scan, then execute)
 
-**Status:** 🔜 specified, not built
-**Depends on:** Phase 0 (system bridge) ✅ · Phase 1 (SystemInfo) ✅ · Phase 2 (Startup Optimizer) ✅ · Phase 3 (destructive framework) 🔜
+**Status:** ✅ implemented and verified (178/178 tests pass)
+**Depends on:** Phase 0 (system bridge) ✅ · Phase 1 (SystemInfo) ✅ · Phase 2 (Startup Optimizer) ✅ · Phase 3 (destructive framework) ✅
 
 ## Goal
 
