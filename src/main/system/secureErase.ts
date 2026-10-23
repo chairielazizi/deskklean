@@ -195,7 +195,7 @@ export const SHRED_IRREVERSIBILITY_REASON =
   'Overwriting destroys the original bytes. The file cannot be restored from a backup because no backup is made — the backup would contain the very data the shred is meant to destroy.';
 
 export const WIPE_IRREVERSIBILITY_REASON =
-  'Overwriting destroys the original bytes. The file cannot be restored from a backup because no backup is made — the backup would contain the very data the shred is meant to destroy.';
+  'Overwriting destroys the original bytes in free space. The file cannot be restored from a backup because no backup is made — the backup would contain the very data the wipe is meant to destroy.';
 
 // SSD Honesty Detection (Phase 14 OQ-SE-3)
 export interface SsdDetectionRunners {
@@ -381,10 +381,22 @@ export async function createFreeSpaceWipePlan(
     }
   }
 
-  // If sizes could not be determined, assume safe defaults or refuse
+// If sizes could not be determined, refuse rather than inventing free-space values.
   if (totalBytes === undefined || freeBytes === undefined) {
-    totalBytes = 100 * 1024 * 1024 * 1024; // 100 GB default
-    freeBytes = 20 * 1024 * 1024 * 1024;   // 20 GB default
+    const refusalReason = 'Volume size and free space could not be determined from the system. Nothing was overwritten because the amount of work could not be measured.';
+    return createOperationPlan({
+      module: 'secure-erase',
+      actions: [],
+      blocked: [
+        {
+          target: normRoot,
+          reason: refusalReason,
+        },
+      ],
+      reversibility: 'irreversible',
+      irreversibilityReason: WIPE_IRREVERSIBILITY_REASON,
+      requiresElevation: false,
+    });
   }
 
   // Free-space threshold check (D4)

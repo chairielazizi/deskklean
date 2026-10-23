@@ -1,3 +1,25 @@
+# DeskKlean v1.0.1
+
+Patch release. No new features and no settings-schema changes.
+
+## Honesty and consistency fixes
+
+- Removed invented free-space defaults from Secure Erase wipe planning. A wipe now refuses with an honest reason when volume size or free space cannot be measured.
+- Secure Erase no longer advertises Gutmann 35-pass or 7-pass methods, matching the v1 design decision. Pass count remains 1 pass by default and 1–3 passes only.
+- Secure Erase overwrite descriptions now describe cryptographic random data rather than zero-fill.
+- Corrected the free-space wipe irreversibility reason to refer to wiping free space, not file shredding.
+- Mock fallback system data now returns `null` instead of invented `NTFS` file-system or `good` health values.
+- App Remover now reports `null` for leftovers detection instead of a misleading `0`, because leftover scanning is not implemented in v1.
+- Updated affected pure-logic tests to expect the honest null values.
+
+## Known limitations
+
+- Unsigned binary — see the v1.0.0 SmartScreen note below
+- No auto-updater yet
+- Windows only
+
+---
+
 # DeskKlean v1.0.0
 
 The first release of DeskKlean — a Windows system cleaner where **every module does

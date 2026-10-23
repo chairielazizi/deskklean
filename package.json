@@ -1,6 +1,6 @@
 {
   "name": "deskklean",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Windows Desktop System Cleanup & Optimization Tool — CCleaner Pro Inspired",
   "main": "dist/main/main.js",
   "author": "DeskKlean Team",

@@ -374,7 +374,7 @@ export interface InstalledApp {
   isStoreApp: boolean;           // true for MSIX/UWP apps
   uninstallMethod: UninstallMethod;
   iconUrl?: string;
-  leftoversDetected: number;     // always 0 in Phase 12 — not implemented
+  leftoversDetected: number | null; // null when leftover scan is not supported/not measured; AppRemover does not scan leftovers in v1
   isSystemComponent?: boolean;   // always false — system components excluded
   hive?: 'HKCU' | 'HKLM';        // registry hive
   keyPath?: string;              // subkey path without hive prefix
@@ -544,7 +544,7 @@ export interface DuplicateScanResult {
 }
 
 // Secure Erase
-export type ShredMethodId = 'zero_1' | 'dod_3' | 'dod_7' | 'gutmann_35';
+export type ShredMethodId = 'zero_1' | 'dod_3';
 
 export interface ShredMethod {
   id: ShredMethodId;

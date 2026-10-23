@@ -149,7 +149,7 @@ async function runTests() {
     isMsi: false,
     isStoreApp: false,
     uninstallMethod: 'uninstall-string',
-    leftoversDetected: 0,
+    leftoversDetected: null,
   };
   const innoCmd = buildUninstallCommand(innoApp, { fileExists: () => true });
   assert(
@@ -340,7 +340,7 @@ async function runTests() {
       mapped.publisher === 'DeskKlean Team' &&
       mapped.installDate === '2024-03-15' &&
       mapped.sizeBytes === 51200 * 1024 &&
-      mapped.leftoversDetected === 0 &&
+      mapped.leftoversDetected === null &&
       mapped.isSystemComponent === false,
     '3f. Valid application fields mapped and converted accurately'
   );
@@ -593,7 +593,7 @@ async function runTests() {
     isMsi: false,
     isStoreApp: false,
     uninstallMethod: 'uninstall-string',
-    leftoversDetected: 0,
+    leftoversDetected: null,
   };
   const plan = createAppUninstallPlan(appToPlan, { fileExists: () => true });
 

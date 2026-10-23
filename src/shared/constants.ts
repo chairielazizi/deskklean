@@ -99,34 +99,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   elevationPromptDismissed: false,
 };
 
+// Secure Erase methods
+// Note: 7-pass (DoD ECE) and 35-pass (Gutmann) are intentionally excluded per NIST SP 800-88 Rev. 1
+// and Phase 14 D2. Modern PRML drives and SSDs gain zero security benefit from >3 passes,
+// while suffering excessive write amplification. Allowed passes: 1–3 only.
 export const SHRED_METHODS: ShredMethod[] = [
   {
     id: 'zero_1',
-    name: 'Quick Zero-Fill',
+    name: 'Quick Random Overwrite',
     passes: 1,
-    description: 'Overwrites target data with zeros in a single pass. Fast and suitable for non-sensitive data.',
+    description: 'Overwrites target data with cryptographically random bytes in a single pass. NIST SP 800-88 Rev. 1 compliant for modern drives.',
     compliance: 'Standard Erasure',
   },
   {
     id: 'dod_3',
     name: 'DoD 5220.22-M',
     passes: 3,
-    description: 'US Department of Defense standard: Overwrites with 0s, 1s, and pseudo-random bytes with verification.',
+    description: 'US Department of Defense standard: three overwrite passes with 0s, 1s, and cryptographic random bytes.',
     compliance: 'DoD 5220.22-M Compliant',
-  },
-  {
-    id: 'dod_7',
-    name: 'NSA / DoD ECE 7-Pass',
-    passes: 7,
-    description: 'High security 7-pass overwrite standard recommended for military grade data sanitization.',
-    compliance: 'NSA 130-1 / DoD 5220.22-M ECE',
-  },
-  {
-    id: 'gutmann_35',
-    name: 'Peter Gutmann Method',
-    passes: 35,
-    description: 'Maximum theoretical security: 35 passes of magnetic domain randomization patterns.',
-    compliance: 'Peter Gutmann (1996) Specification',
   },
 ];
 
