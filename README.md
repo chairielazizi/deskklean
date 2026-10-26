@@ -8,14 +8,14 @@ DeskKlean backs up registry state before modifications, routes user files throug
 
 ---
 
-## Downloads (v1.0.0)
+## Downloads (v1.0.1)
 
-Grab the latest release from the [GitHub Releases](https://github.com/chairielazizi/deskklean/releases/tag/v1.0.0) page:
+Grab the latest release from the [GitHub Releases](https://github.com/chairielazizi/deskklean/releases/tag/v1.0.1) page:
 
 | Artifact | Type | Description |
 |---|---|---|
-| **[`DeskKlean Setup 1.0.0.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.0/DeskKlean.Setup.1.0.0.exe)** | NSIS Installer | Installs per-user to `%LOCALAPPDATA%\Programs\DeskKlean`. Does not require administrative privileges to install. |
-| **[`DeskKlean-Portable-1.0.0.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.0/DeskKlean-Portable-1.0.0.exe)** | Portable `.exe` | Standalone single-file executable. Runs directly without installation. |
+| **[`DeskKlean Setup 1.0.1.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.1/DeskKlean.Setup.1.0.1.exe)** | NSIS Installer | Installs per-user to `%LOCALAPPDATA%\Programs\DeskKlean`. Does not require administrative privileges to install. |
+| **[`DeskKlean-Portable-1.0.1.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.1/DeskKlean-Portable-1.0.1.exe)** | Portable `.exe` | Standalone single-file executable. Runs directly without installation. |
 
 ### ⚠️ Windows SmartScreen Notice
 
@@ -136,7 +136,7 @@ npm run dist
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — The authoritative roadmap, completed phases, and decisions of record.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — System architecture, IPC patterns, and framework design.
 - [`docs/DESIGN-DECISIONS.md`](docs/DESIGN-DECISIONS.md) — Resolved design choices and requirements grilling notes.
-- [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) — v1.0.0 release notes and module inventory.
+- [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) — v1.0.1 release notes and module inventory.
 - [`docs/PHASE-3-DESTRUCTIVE-FRAMEWORK.md`](docs/PHASE-3-DESTRUCTIVE-FRAMEWORK.md) — Core execution, backup, and verification framework.
 - [`docs/PHASE-15A-CI-WORKFLOW.md`](docs/PHASE-15A-CI-WORKFLOW.md) — GitHub Actions CI pipeline specification.
 - [`docs/PHASE-15-CICD-PACKAGING.md`](docs/PHASE-15-CICD-PACKAGING.md) — Packaging and distribution specifications.
