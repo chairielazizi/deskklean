@@ -106,7 +106,21 @@ destructive. Each destructive module ships scan-first.
 | 14 | SecureErase | ✅ file shredder + free-space wiper with headroom floor & SSD honesty |
 | 15 | CI/CD, packaging, releases | ✅ Phase 15a CI workflow + Phase 15b NSIS/portable packaging & v1.0.0 release |
 
-All phases 0–15 are fully implemented, verified, and released.
+All phases 0–15 are fully implemented, verified, and released (v1.0.1 is the current release).
+
+### v1.1.0 — the honesty-gap release (specified, not built)
+
+v1.0.1 fixed values that lied. v1.1.0 fixes **controls that lie**: settings and UI that promise work
+the backend never performs. Plan: [`V1.1.0-PLAN.md`](V1.1.0-PLAN.md).
+
+| Phase | Scope | Status |
+|---|---|---|
+| 16 | Auto-update backend — stable channel (`autoCheckUpdates` is currently unconsumed) | 🔜 [`PHASE-16-AUTOUPDATE.md`](PHASE-16-AUTOUPDATE.md) |
+| 17 | Custom clean rules wired into SmartClean (`customRules` is currently unread by `src/main`) | 🔜 [`PHASE-17-CUSTOMCLEANRULES.md`](PHASE-17-CUSTOMCLEANRULES.md) |
+| 18 | Scheduled cleaning — headless `--scheduled-clean` + Task Scheduler (`scheduledClean*` is currently unconsumed) | 🔜 [`PHASE-18-SCHEDULEDCLEAN.md`](PHASE-18-SCHEDULEDCLEAN.md) |
+| 19 | AppRemover leftover detection — read-only, user-guided (`deepCleanLeftovers` is currently ignored) | 🔜 [`PHASE-19-LEFTOVERS.md`](PHASE-19-LEFTOVERS.md) |
+
+Release decisions (D-11-1..5), non-goals and the verification bar are in `V1.1.0-PLAN.md` §2–§5.
 
 ---
 
