@@ -124,6 +124,11 @@ export interface ScanSmartCleanOptions {
   - validation on save: invalid path/pattern shows an inline error and the rule is **not** persisted
   - an "off / on" toggle per rule that actually gates scanning
   - a label: *"User-defined rule — not vetted by Microsoft"*
+- **Fix the Add Rule default (spec review finding).** `Settings.tsx:59-61` currently creates a new rule
+  with `directoryPath: 'C:\\'` — a bare drive root, which §2.2 rejects outright. The default must be
+  an empty string with a required-path prompt, so a user cannot save an invalid rule by pressing
+  "Add Rule" and walking away. `name: 'New Rule'` and `filePattern: '*.tmp'` are acceptable defaults;
+  the root is not.
 - SmartClean results: a separate **Custom rules** section listing each rule with measured size, file
   count, skipped count and failure reason. A failed rule shows the reason, never `0 B`.
 

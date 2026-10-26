@@ -152,11 +152,46 @@ Handlers in `src/main/ipc.ts`, following the existing `ipcMain.handle` pattern. 
 `UPDATER_STATUS` on every state transition via the `mainWindow.webContents.send` path already used
 by `DISK_SCAN_PROGRESS`.
 
+### 4.1 Three-layer wiring — the spec review found this was missing
+
+A new IPC channel alone reaches nothing. Every existing feature crosses **four** layers, and the
+updater must do the same or the renderer cannot call it:
+
+| Layer | File | What to add |
+|---|---|---|
+| Channel constants | `src/shared/constants.ts` (`IPC_CHANNELS`, `:7-80`) | the five updater channels |
+| API type | `src/shared/types.ts` (`DeskKleanAPI`, around `:669` where `uninstallApp` lives) | `getUpdaterStatus`, `checkForUpdates`, `downloadUpdate`, `installUpdate`, `onUpdaterStatus` |
+| Preload bridge | `src/preload/index.ts` (`:93-116` shows the invoke/`ipcRenderer.on` pattern) | matching `invoke` calls + the event subscription/removal pair, mirroring `onDiskScanProgress` |
+| Renderer client | `src/renderer/apiClient.ts` (`:991-994` selects `window.deskKleanAPI` or `mockAPI`) | passthrough methods **and** a `mockAPI` entry |
+
+The `mockAPI` entry must be honest too: in browser preview it should report
+`state: 'unavailable'` with a reason, not a fabricated "up to date". `apiClient.ts` already carries
+invented preview data elsewhere (`:970` `spaceFreedBytes: 3420000000`, `:985`
+`'Disabled 3 high-impact background updaters (-2.4s boot time)'`) — do not add a third fiction here.
+Cleaning up those existing preview mocks is **out of scope** for Phase 16; note it for v2.
+
+### 4.2 Settings are saved explicitly, not live
+
+`Settings.tsx` mutates local React state via `updateSetting()` and persists only on the **Save
+Settings** button (`handleSave` → `api.saveSettings`). Therefore:
+
+- The updater must read `settings.json` from disk **at the moment it checks**, not cache the value at
+  startup. Otherwise a user who enables the toggle and forgets to save gets silent no-ops, and a user
+  who disables it and forgets to save gets an unexpected network call.
+- Alternatively subscribe to `SETTINGS_SAVE` and refresh the cached flag. Either is acceptable; the
+  spec requires that **the toggle takes effect only after Save**, and that the UI does not imply
+  otherwise (no "enabled" toast before the write lands).
+
 ## 5. Renderer
 
-- **Settings → General**: the existing `autoCheckUpdates` toggle (`Settings.tsx:183`) now drives
-  real behaviour. Keep its label honest: *"Check for updates automatically"*.
-- **Settings → Updates** (Q13d defines a tabbed surface including Updates): show
+- **Settings → Behavior card**: the existing `autoCheckUpdates` toggle (`Settings.tsx:183`, inside the
+  Behavior card at `:175-215`) now drives real behaviour. Keep its label honest: *"Check for updates
+  automatically"*.
+- **Settings → new "Updates" card.** Correction from spec review: `Settings.tsx` has **no tabs today**
+  — it is a single scrolling page of five cards (Appearance `:131`, Behavior `:175`, Scheduled
+  Cleaning `:217`, Custom Clean Rules `:261`, Security `:307`), 329 lines total. Q13d's tabbed surface
+  is an aspiration, not an existing structure, so this phase must **not** invent a tab system. Add an
+  Updates card in the same `motion.div` card pattern as its neighbours. It shows:
   - current version (`APP_VERSION`)
   - state line: one of *"Not checked yet"*, *"Checking…"*, *"Update 1.1.0 available"*,
     *"Up to date (checked <time>)"*, *"Update check failed: <message>"*, *"Portable build — download
