@@ -154,6 +154,7 @@ export function validatePath(
     appDir?: string;
     allowNonExistent?: boolean;
     allowUserData?: boolean;
+    allowAppLocations?: boolean;
   } = {}
 ): PathValidationResult {
   // 1. String, non-empty, absolute
@@ -233,11 +234,30 @@ export function validatePath(
   }
 
   // 5. Check unconditionally protected list
+  const sys = getSystemPaths();
   const protectedPaths = getProtectedPaths(options.customExcludedPaths, {
     allowUserData: options.allowUserData,
   }).map(normalizePathForComparison);
 
+  const appRootPaths = options.allowAppLocations
+    ? [
+        normalizePathForComparison(sys.programFiles),
+        normalizePathForComparison(sys.programFilesX86),
+        normalizePathForComparison(sys.programData),
+      ]
+    : [];
+
   for (const prot of protectedPaths) {
+    if (options.allowAppLocations && appRootPaths.includes(prot)) {
+      if (normResolved === prot) {
+        return {
+          allowed: false,
+          reason: `Target path matches protected root directory: ${prot}`,
+        };
+      }
+      continue;
+    }
+
     // Exact match or subpath match
     if (normResolved === prot || normResolved.startsWith(prot + '/')) {
       return {

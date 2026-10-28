@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../apiClient';
-import { InstalledApp } from '../../shared/types';
+import { InstalledApp, LeftoverScanResult, LeftoverCandidate } from '../../shared/types';
 import { formatBytes } from '../utils/format';
 import {
   PackageX,
@@ -17,6 +17,10 @@ import {
   ShieldAlert,
   X,
   RefreshCw,
+  Folder,
+  FileText,
+  Database,
+  Sparkles,
 } from 'lucide-react';
 
 export const AppRemover: React.FC = () => {
@@ -37,10 +41,23 @@ export const AppRemover: React.FC = () => {
   // Verified uninstall outcome status
   const [uninstallResult, setUninstallResult] = useState<{
     id: string;
+    appName?: string;
     success: boolean;
     message: string;
     verified?: boolean;
     rebootRequired?: boolean;
+    leftovers?: LeftoverScanResult;
+  } | null>(null);
+
+  // Leftover Review Panel state (Phase 19 §5)
+  const [activeLeftovers, setActiveLeftovers] = useState<LeftoverScanResult | null>(null);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [isCleaningLeftovers, setIsCleaningLeftovers] = useState(false);
+  const [leftoverCleanOutcome, setLeftoverCleanOutcome] = useState<{
+    completed: number;
+    failed: number;
+    skipped: number;
+    message: string;
   } | null>(null);
 
   const loadApps = async (forceRefresh = false) => {
@@ -63,6 +80,57 @@ export const AppRemover: React.FC = () => {
     setAcknowledgedIrreversible(false);
   };
 
+  const handleOpenLeftoversModal = (leftovers: LeftoverScanResult) => {
+    setActiveLeftovers(leftovers);
+    // Pre-select high confidence candidates only; medium requires individual selection (§5)
+    setSelectedCandidateIds(
+      leftovers.candidates.filter((c) => c.selectableByDefault).map((c) => c.id)
+    );
+    setLeftoverCleanOutcome(null);
+  };
+
+  const handleToggleCandidate = (id: string) => {
+    setSelectedCandidateIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleExecuteCleanLeftovers = async () => {
+    if (!activeLeftovers || selectedCandidateIds.length === 0) return;
+    setIsCleaningLeftovers(true);
+    setLeftoverCleanOutcome(null);
+
+    try {
+      const result = await api.cleanLeftovers(activeLeftovers.appId, selectedCandidateIds);
+      setLeftoverCleanOutcome({
+        completed: result.completed,
+        failed: result.failed,
+        skipped: result.skipped,
+        message: result.message || 'Cleanup finished.',
+      });
+
+      // Update remaining candidates in modal
+      const remainingCandidates = activeLeftovers.candidates.filter(
+        (c) => !selectedCandidateIds.includes(c.id)
+      );
+      setActiveLeftovers({
+        ...activeLeftovers,
+        candidates: remainingCandidates,
+        detectedCount: remainingCandidates.length,
+      });
+      setSelectedCandidateIds([]);
+    } catch (err) {
+      setLeftoverCleanOutcome({
+        completed: 0,
+        failed: selectedCandidateIds.length,
+        skipped: 0,
+        message: err instanceof Error ? err.message : 'Leftover cleanup failed.',
+      });
+    } finally {
+      setIsCleaningLeftovers(false);
+    }
+  };
+
   const handleExecuteUninstall = async () => {
     if (!confirmApp) return;
     const target = confirmApp;
@@ -70,18 +138,21 @@ export const AppRemover: React.FC = () => {
     setUninstallingId(target.id);
 
     try {
-      const result = await api.uninstallApp(target.id, false);
+      const result = await api.uninstallApp(target.id);
       setUninstallResult({
         id: target.id,
+        appName: target.name,
         success: result.success,
         message: result.message,
         verified: result.verified,
         rebootRequired: result.rebootRequired,
+        leftovers: result.leftovers,
       });
       await loadApps(true);
     } catch (e) {
       setUninstallResult({
         id: target.id,
+        appName: target.name,
         success: false,
         message: e instanceof Error ? e.message : 'Uninstall failed during execution.',
         verified: false,
@@ -101,15 +172,17 @@ export const AppRemover: React.FC = () => {
         const result = await api.removeAppRegistryEntry(target.id);
         setUninstallResult({
           id: target.id,
+          appName: target.name,
           success: result.success,
           message: result.message || 'Registry entry removed. Application remains installed on machine.',
           verified: result.success,
         });
       } else {
         // Fallback to uninstallApp if direct helper is unavailable
-        const result = await api.uninstallApp(target.id, false);
+        const result = await api.uninstallApp(target.id);
         setUninstallResult({
           id: target.id,
+          appName: target.name,
           success: result.success,
           message: result.message,
           verified: result.verified,
@@ -164,6 +237,99 @@ export const AppRemover: React.FC = () => {
           Enumerate and verify removal of installed desktop and Windows Store applications
         </p>
       </div>
+
+      {/* Verified Uninstall Result Banner with Leftover Detection (Phase 19 §5) */}
+      <AnimatePresence>
+        {uninstallResult && (
+          <motion.div
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className={`p-4 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
+              uninstallResult.success
+                ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-200'
+                : uninstallResult.rebootRequired
+                ? 'bg-amber-950/30 border-amber-800/50 text-amber-200'
+                : 'bg-rose-950/30 border-rose-800/50 text-rose-200'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              {uninstallResult.success ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+              ) : uninstallResult.rebootRequired ? (
+                <Clock className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-sm font-semibold">
+                    {uninstallResult.appName || 'Application'}:{' '}
+                    {uninstallResult.verified
+                      ? `Verified ${uninstallResult.message}`
+                      : uninstallResult.message}
+                  </h4>
+                  {uninstallResult.rebootRequired && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 font-medium">
+                      Reboot required
+                    </span>
+                  )}
+                </div>
+
+                {/* Leftovers Scan Outcome */}
+                {uninstallResult.leftovers && (
+                  <div className="text-xs">
+                    {uninstallResult.leftovers.scanned ? (
+                      uninstallResult.leftovers.candidates.length > 0 ? (
+                        <p className="text-slate-300">
+                          <span className="font-semibold text-white">
+                            {uninstallResult.leftovers.detectedCount} leftovers found
+                          </span>
+                          {uninstallResult.leftovers.totalBytes !== null
+                            ? ` (${formatBytes(uninstallResult.leftovers.totalBytes)})`
+                            : ''}
+                          . Residual files and registry keys can be safely reviewed and removed.
+                        </p>
+                      ) : (
+                        <p className="text-slate-400">No leftover remnants detected.</p>
+                      )
+                    ) : (
+                      <p className="text-amber-300">
+                        Leftover scan could not run:{' '}
+                        {uninstallResult.leftovers.failureReason || 'unknown failure'}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+              {uninstallResult.leftovers?.scanned &&
+                uninstallResult.leftovers.candidates.length > 0 && (
+                  <button
+                    onClick={() => handleOpenLeftoversModal(uninstallResult.leftovers!)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md shadow-emerald-900/30 transition-all"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {uninstallResult.leftovers.detectedCount} leftovers found (
+                    {uninstallResult.leftovers.totalBytes !== null
+                      ? formatBytes(uninstallResult.leftovers.totalBytes)
+                      : 'Remnants'}
+                    ). Review
+                  </button>
+                )}
+              <button
+                onClick={() => setUninstallResult(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors"
+                title="Dismiss"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Summary Card with explicit estimated size labelling (Binding Rail 4) */}
       <motion.div
@@ -545,6 +711,181 @@ export const AppRemover: React.FC = () => {
                 >
                   Remove Entry From List
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Leftovers Review Panel Modal (Phase 19 §5) */}
+      <AnimatePresence>
+        {activeLeftovers && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[85vh] flex flex-col"
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-4 shrink-0">
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 shrink-0">
+                    <Sparkles className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-white">
+                      Leftovers Found: {activeLeftovers.appName}
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Select residual items to clean. Files are moved to the Recycle Bin; registry keys are backed up as .reg files.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveLeftovers(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Cleanup Outcome Banner (if executed) */}
+              {leftoverCleanOutcome && (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex items-center gap-2 shrink-0 ${
+                    leftoverCleanOutcome.failed === 0
+                      ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-200'
+                      : 'bg-amber-950/30 border-amber-800/40 text-amber-200'
+                  }`}
+                >
+                  {leftoverCleanOutcome.failed === 0 ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                  )}
+                  <span>
+                    {leftoverCleanOutcome.completed} removed
+                    {leftoverCleanOutcome.skipped > 0 ? `, ${leftoverCleanOutcome.skipped} skipped` : ''}
+                    {leftoverCleanOutcome.failed > 0 ? `, ${leftoverCleanOutcome.failed} failed` : ''}.{' '}
+                    {leftoverCleanOutcome.message}
+                  </span>
+                </div>
+              )}
+
+              {/* Candidates List (scrollable) */}
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-[160px]">
+                {activeLeftovers.candidates.length === 0 ? (
+                  <div className="text-center py-10 text-slate-400 text-xs">
+                    All selected leftovers have been cleaned or no candidates remain.
+                  </div>
+                ) : (
+                  activeLeftovers.candidates.map((cand) => {
+                    const isSelected = selectedCandidateIds.includes(cand.id);
+                    const isHigh = cand.confidence === 'high';
+
+                    return (
+                      <div
+                        key={cand.id}
+                        onClick={() => handleToggleCandidate(cand.id)}
+                        className={`p-3 rounded-xl border transition-all cursor-pointer select-none ${
+                          isSelected
+                            ? 'bg-slate-800/80 border-emerald-500/40 shadow-sm shadow-emerald-900/10'
+                            : 'bg-slate-900/50 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}} // Handled by container onClick
+                            className="mt-1 rounded border-slate-700 bg-slate-800 text-emerald-500 focus:ring-emerald-500/30 cursor-pointer"
+                          />
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {/* Kind Icon */}
+                              {cand.kind === 'directory' ? (
+                                <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+                              ) : cand.kind === 'file' ? (
+                                <FileText className="w-4 h-4 text-sky-400 shrink-0" />
+                              ) : (
+                                <Database className="w-4 h-4 text-violet-400 shrink-0" />
+                              )}
+
+                              {/* Confidence Badge */}
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
+                                  isHigh
+                                    ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                                }`}
+                              >
+                                {cand.confidence}
+                              </span>
+
+                              {/* Measured Size Label */}
+                              <span className="text-[11px] text-slate-400 font-medium ml-auto">
+                                {cand.sizeBytes !== null
+                                  ? formatBytes(cand.sizeBytes)
+                                  : 'Unmeasured'}
+                              </span>
+                            </div>
+
+                            {/* Path */}
+                            <p
+                              className="text-xs font-mono text-slate-200 truncate mt-1"
+                              title={cand.path}
+                            >
+                              {cand.path}
+                            </p>
+
+                            {/* Reason String */}
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              {cand.reason}
+                            </p>
+
+                            {/* Medium Confidence Warning (Phase 19 §5) */}
+                            {!isHigh && (
+                              <div className="mt-1.5 p-1.5 rounded-lg bg-amber-950/20 border border-amber-800/30 text-[11px] text-amber-300 flex items-center gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                                <span>Name matches only — verify this is not another application&apos;s data.</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between pt-3 border-t border-slate-800 shrink-0">
+                <span className="text-xs text-slate-400">
+                  {selectedCandidateIds.length} of {activeLeftovers.candidates.length} selected
+                </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setActiveLeftovers(null)}
+                    className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={handleExecuteCleanLeftovers}
+                    disabled={isCleaningLeftovers || selectedCandidateIds.length === 0}
+                    className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md shadow-emerald-900/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isCleaningLeftovers ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-3.5 h-3.5" />
+                    )}
+                    Clean Selected ({selectedCandidateIds.length})
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>

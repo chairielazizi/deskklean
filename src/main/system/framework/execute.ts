@@ -154,11 +154,44 @@ export async function executeOperationPlan(
     return executeRegistryRestore(plan, restoreAction, logActivity);
   }
 
-  // Handle Registry Deletions (Phase 8 Registry Fixer)
+  // Handle Mixed Registry and File Deletion Plan (Phase 19 AppRemover Leftovers)
   const hasRegistryDeletions = plan.actions.some(
     (a) => a.kind === 'registry-key' || a.kind === 'registry-value'
   );
+  const hasFileDeletions = plan.actions.some(
+    (a) => a.kind === 'delete-file' || a.kind === 'delete-tree'
+  );
 
+  if (hasRegistryDeletions && hasFileDeletions) {
+    const regPlan = {
+      ...plan,
+      id: `${plan.id}-reg`,
+      actions: plan.actions.filter((a) => a.kind === 'registry-key' || a.kind === 'registry-value'),
+    };
+    const filePlan = {
+      ...plan,
+      id: `${plan.id}-files`,
+      actions: plan.actions.filter((a) => a.kind === 'delete-file' || a.kind === 'delete-tree'),
+    };
+    const regResult = await executeRegistryDeletions(regPlan, logActivity, runners);
+    const fileResult = await executeFileDeletions(filePlan, logActivity, runners);
+    removeOperationPlan(plan.id);
+    return {
+      success: regResult.success && fileResult.success,
+      completed: regResult.completed + fileResult.completed,
+      failed: regResult.failed + fileResult.failed,
+      skipped: regResult.skipped + fileResult.skipped,
+      reclaimableBytes:
+        regResult.reclaimableBytes !== null || fileResult.reclaimableBytes !== null
+          ? (regResult.reclaimableBytes || 0) + (fileResult.reclaimableBytes || 0)
+          : null,
+      failures: [...(regResult.failures || []), ...(fileResult.failures || [])],
+      message: `${regResult.completed + fileResult.completed} items removed (${fileResult.skipped + regResult.skipped} skipped, ${regResult.failed + fileResult.failed} failed).`,
+      backupPath: regResult.backupPath || fileResult.backupPath,
+    };
+  }
+
+  // Handle Registry Deletions (Phase 8 Registry Fixer)
   if (hasRegistryDeletions) {
     return executeRegistryDeletions(plan, logActivity, runners);
   }
@@ -173,10 +206,6 @@ export async function executeOperationPlan(
   }
 
   // Handle File / Tree Deletion Plan (e.g. SmartClean)
-  const hasFileDeletions = plan.actions.some(
-    (a) => a.kind === 'delete-file' || a.kind === 'delete-tree'
-  );
-
   if (hasFileDeletions) {
     return executeFileDeletions(plan, logActivity, runners);
   }

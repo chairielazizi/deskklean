@@ -7,6 +7,7 @@ import {
   SmartCleanFileEntry,
   SmartCleanSkippedFile,
   SmartCleanCategoryStatus,
+  CustomCleanRule,
 } from '../../../shared/types';
 import {
   SmartCleanCategoryDefinition,
@@ -16,6 +17,7 @@ import {
 } from './categories';
 import { validatePath } from '../framework/protected';
 import { isWindows, runPowerShell } from '../powershell';
+import { scanCustomRules } from './customRules';
 
 /**
  * Resolves Windows environment variables (%VAR%) against a provided environment dictionary
@@ -532,6 +534,7 @@ export interface ScanSmartCleanOptions {
   categories?: SmartCleanCategoryDefinition[];
   scanRootOverrides?: Record<string, string>;
   customExcludedPaths?: string[];
+  customRules?: CustomCleanRule[];      // NEW — additive
 }
 
 /**
@@ -588,9 +591,22 @@ export async function scanSmartClean(
     }
   });
 
-  const categoryResults = await Promise.all(scanPromises);
+  // Concurrently scan custom rules if provided (Phase 17)
+  const customRulesPromise = options.customRules && options.customRules.length > 0
+    ? scanCustomRules(options.customRules, {
+        env: options.env,
+        scanRootOverrides: options.scanRootOverrides,
+        customExcludedPaths: options.customExcludedPaths,
+      })
+    : Promise.resolve([]);
+
+  const [categoryResults, customRuleResults] = await Promise.all([
+    Promise.all(scanPromises),
+    customRulesPromise,
+  ]);
 
   // Calculate real total reclaimable bytes (sum of real measurements, never estimated)
+  // Custom rules are deliberately excluded from this total (§3)
   let totalReclaimableBytes = 0;
   for (const cat of categoryResults) {
     if (typeof cat.reclaimableBytes === 'number' && Number.isFinite(cat.reclaimableBytes)) {
@@ -606,5 +622,6 @@ export async function scanSmartClean(
     categories: categoryResults,
     excluded: EXCLUDED_CATEGORIES,
     totalReclaimableBytes,
+    customRules: customRuleResults,
   };
 }

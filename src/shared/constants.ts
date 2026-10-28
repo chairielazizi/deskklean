@@ -25,6 +25,9 @@ export const IPC_CHANNELS = {
   // Smart Clean
   SMART_CLEAN_SCAN: 'smartClean:scan',
   SMART_CLEAN_EXECUTE: 'smartClean:execute',
+  CUSTOM_RULES_VALIDATE: 'customRules:validate',
+  CUSTOM_RULES_SCAN: 'customRules:scan',
+  CUSTOM_RULES_PLAN: 'customRules:plan',
 
   // Registry
   REGISTRY_SCAN: 'registry:scan',
@@ -51,6 +54,8 @@ export const IPC_CHANNELS = {
   APPS_GET_INSTALLED: 'apps:getInstalled',
   APPS_UNINSTALL: 'apps:uninstall',
   APPS_REMOVE_ENTRY_ONLY: 'apps:removeEntryOnly',
+  APPS_SCAN_LEFTOVERS: 'apps:scanLeftovers',
+  APPS_CLEAN_LEFTOVERS: 'apps:cleanLeftovers',
 
   // Extensions
   EXTENSIONS_GET: 'extensions:get',
@@ -70,6 +75,19 @@ export const IPC_CHANNELS = {
   SHRED_ITEMS: 'shred:items',
   WIPE_FREE_SPACE: 'shred:wipeFreeSpace',
   SHRED_IS_SSD: 'shred:isSsd',
+
+  // Updater
+  UPDATER_GET_STATUS: 'updater:getStatus',
+  UPDATER_CHECK: 'updater:check',
+  UPDATER_DOWNLOAD: 'updater:download',
+  UPDATER_INSTALL: 'updater:install',
+  UPDATER_STATUS: 'updater:status',   // main -> renderer event
+
+  // Scheduled Cleaning (Phase 18)
+  SCHEDULED_GET_STATE: 'scheduled:getState',
+  SCHEDULED_SET_ENABLED: 'scheduled:setEnabled',
+  SCHEDULED_RUN_NOW: 'scheduled:runNow',
+  APP_IS_PORTABLE: 'app:isPortable',
 
   // Settings
   SETTINGS_GET: 'settings:get',

@@ -3,15 +3,12 @@ import path from 'path';
 import fs from 'fs';
 import { setupIpcHandlers } from './ipc';
 import { sweepLeftoverWipeFiles } from './system/secureErase';
+import { runScheduledClean } from './system/scheduledClean';
 
 const logFile = path.join(app.getPath('userData'), 'desk_klean_debug.log');
-const rootLogFile = 'E:\\Coding\\antigravity-projects\\DeskKlean\\debug.log';
 
 function debugLog(msg: string) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
-  try {
-    fs.appendFileSync(rootLogFile, line);
-  } catch (e) {}
   try {
     fs.appendFileSync(logFile, line);
   } catch (e) {}
@@ -135,48 +132,70 @@ function createWindow(): void {
   });
 }
 
-// Ensure single instance with grace retry period for yielding process during elevation
-let gotTheLock = app.requestSingleInstanceLock();
-debugLog('app.requestSingleInstanceLock() initial result: ' + gotTheLock);
+const SCHEDULED_CLEAN_FLAG = '--scheduled-clean';
+const isScheduledRun = process.argv.includes(SCHEDULED_CLEAN_FLAG);
 
-if (!gotTheLock) {
-  debugLog('Single instance lock not acquired initially. Retrying for up to 2s to allow yielding process to release...');
-  const retryStart = Date.now();
-  while (!gotTheLock && Date.now() - retryStart < 2000) {
-    const end = Date.now() + 150;
-    while (Date.now() < end) {}
-    gotTheLock = app.requestSingleInstanceLock();
-    debugLog('app.requestSingleInstanceLock() retry result: ' + gotTheLock);
-  }
-}
-
-if (!gotTheLock) {
-  debugLog('Could not get single instance lock after retries! Quitting.');
-  app.quit();
-} else {
-  app.on('second-instance', () => {
-    debugLog('second-instance event received');
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    } else {
-      createWindow();
+if (isScheduledRun) {
+  debugLog('Scheduled clean mode active — skipping window, tray, and IPC handlers');
+  app.whenReady().then(async () => {
+    debugLog('app.whenReady resolved for scheduled clean');
+    try {
+      const dryRun = process.argv.includes('--dry-run');
+      const { exitCode } = await runScheduledClean({
+        trigger: 'task-scheduler',
+        dryRun,
+      });
+      debugLog(`runScheduledClean completed with exitCode=${exitCode}`);
+      app.exit(exitCode);
+    } catch (err: unknown) {
+      debugLog('runScheduledClean fatal error: ' + err);
+      app.exit(2);
     }
   });
+} else {
+  // Ensure single instance with grace retry period for yielding process during elevation
+  let gotTheLock = app.requestSingleInstanceLock();
+  debugLog('app.requestSingleInstanceLock() initial result: ' + gotTheLock);
 
-  app.whenReady().then(() => {
-    debugLog('app.whenReady resolved');
-    sweepLeftoverWipeFiles().catch((err) => debugLog('sweepLeftoverWipeFiles error: ' + err));
-    createWindow();
+  if (!gotTheLock) {
+    debugLog('Single instance lock not acquired initially. Retrying for up to 2s to allow yielding process to release...');
+    const retryStart = Date.now();
+    while (!gotTheLock && Date.now() - retryStart < 2000) {
+      const end = Date.now() + 150;
+      while (Date.now() < end) {}
+      gotTheLock = app.requestSingleInstanceLock();
+      debugLog('app.requestSingleInstanceLock() retry result: ' + gotTheLock);
+    }
+  }
 
-    app.on('activate', () => {
-      debugLog('app activate event');
-      if (BrowserWindow.getAllWindows().length === 0) {
+  if (!gotTheLock) {
+    debugLog('Could not get single instance lock after retries! Quitting.');
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      debugLog('second-instance event received');
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      } else {
         createWindow();
       }
     });
-  });
+
+    app.whenReady().then(() => {
+      debugLog('app.whenReady resolved');
+      sweepLeftoverWipeFiles().catch((err) => debugLog('sweepLeftoverWipeFiles error: ' + err));
+      createWindow();
+
+      app.on('activate', () => {
+        debugLog('app activate event');
+        if (BrowserWindow.getAllWindows().length === 0) {
+          createWindow();
+        }
+      });
+    });
+  }
 }
 
 app.on('window-all-closed', () => {

@@ -173,6 +173,7 @@ export interface SmartCleanReport {
   categories: SmartCleanCategory[];
   excluded: ExcludedCategory[];           // always shown, with reasons
   totalReclaimableBytes: number;          // sum of real measurements, never estimated
+  customRules?: CustomRuleScanResult[];   // Phase 17 additive
 }
 
 // Legacy Smart Clean Types (Retained for backwards compatibility)
@@ -384,6 +385,28 @@ export interface InstalledApp {
   nonRemovable?: boolean;        // for Store apps: protected system apps
 }
 
+export type LeftoverConfidence = 'high' | 'medium';
+
+export interface LeftoverCandidate {
+  id: string;
+  kind: 'file' | 'directory' | 'registry-key';
+  path: string;                 // absolute path or full registry path
+  sizeBytes: number | null;     // measured; null when unmeasurable — never 0 as a stand-in
+  confidence: LeftoverConfidence;
+  reason: string;               // why it was matched — shown verbatim to the user
+  selectableByDefault: boolean; // true only for confidence 'high'
+}
+
+export interface LeftoverScanResult {
+  appId: string;
+  appName: string;
+  scanned: boolean;             // false when the scan could not run
+  failureReason: string | null; // required when scanned is false
+  candidates: LeftoverCandidate[];
+  detectedCount: number | null; // null when scanned is false — NEVER 0
+  totalBytes: number | null;
+}
+
 export interface AppUninstallResult {
   appId: string;
   success: boolean;
@@ -398,6 +421,7 @@ export interface AppUninstallResult {
   reclaimableBytes?: number | null;
   failures?: ExecuteFailure[];
   backupPath?: string;
+  leftovers?: LeftoverScanResult;
 }
 
 // Extension Manager
@@ -592,6 +616,43 @@ export interface CustomCleanRule {
   enabled: boolean;
 }
 
+export type CustomRuleConfidence = 'user-defined';
+
+export interface CustomRuleFile {
+  path: string;
+  sizeBytes: number;
+}
+
+export interface SkippedFile {
+  path: string;
+  reason: string;
+}
+
+export interface CustomRuleScanResult {
+  ruleId: string;
+  ruleName: string;
+  id: string;                 // 'custom:<ruleId>' — matches the SmartCleanCategory id convention
+  rootPath: string;           // fully resolved, absolute
+  status: 'ok' | 'failed' | 'skipped';
+  failureReason?: string;     // required when status is 'failed' or 'skipped'
+  reclaimableBytes: number | null;  // null when unmeasurable — never 0 as a stand-in
+  fileCount: number | null;
+  files: CustomRuleFile[];    // capped, see §2.5
+  skippedFiles: SkippedFile[];
+  verdict: 'CONDITIONAL';     // never 'SAFE'
+  source: 'user-defined rule';// never a Microsoft URL
+  deletionMethod: 'recycle-bin';
+  confidence: CustomRuleConfidence;
+  filesTruncated?: boolean;
+}
+
+export interface CustomRuleValidationResult {
+  ok: boolean;
+  resolvedRoot?: string;
+  reason?: string;
+  warning?: string;
+}
+
 export interface AppSettings {
   theme: 'cyber-slate' | 'deep-oled' | 'midnight-navy' | 'amethyst';
   accentColor: 'emerald' | 'cyan' | 'violet' | 'blue';
@@ -618,6 +679,73 @@ export interface ActivityItem {
   detail: string;
   type: 'info' | 'success' | 'warning' | 'error';
   spaceFreedBytes?: number;
+}
+
+// Auto-Updater
+export type UpdaterState =
+  | 'idle'          // nothing attempted yet
+  | 'disabled'      // autoCheckUpdates is false and no manual check in flight
+  | 'unavailable'   // dev build or portable build — cannot self-update
+  | 'checking'
+  | 'available'     // updateVersion is known and non-null
+  | 'not-available' // a check COMPLETED and reported no newer version
+  | 'downloading'
+  | 'downloaded'    // ready to install
+  | 'error';
+
+export interface UpdaterStatus {
+  state: UpdaterState;
+  currentVersion: string;          // app.getVersion()
+  availableVersion: string | null; // null unless state is available/downloading/downloaded
+  releaseNotes: string | null;     // null when the feed has none — never synthesised
+  progressPercent: number | null;  // real from electron-updater, null when unknown
+  bytesPerSecond: number | null;
+  lastCheckedAt: string | null;    // ISO, only after a check actually ran
+  error: string | null;            // populated ONLY in state 'error'
+  message?: string | null;
+}
+
+// Scheduled Cleaning (Phase 18)
+export interface ScheduledCategoryOutcome {
+  id: string;
+  name: string;
+  status: 'cleaned' | 'failed' | 'skipped';
+  reason?: string;            // why skipped/failed — required when not 'cleaned'
+  reclaimedBytes: number | null;
+  filesRemoved: number | null;
+}
+
+export interface ScheduledCleanReport {
+  startedAt: string;
+  finishedAt: string;
+  trigger: 'task-scheduler' | 'manual';
+  appVersion: string;
+  elevated: boolean;
+  skippedReason: string | null;   // set when nothing was attempted
+  categories: ScheduledCategoryOutcome[];
+  totals: {
+    completed: number;
+    failed: number;
+    skipped: number;
+    reclaimedBytes: number | null; // null when no category measured
+  };
+}
+
+export interface ScheduledCleanState {
+  registered: boolean;
+  nextRun: string | null;      // real NextRunTime, null when not registered
+  lastRun: string | null;
+  lastResult: number | null;   // real LastTaskResult
+  isPortable?: boolean;
+  reason?: string;
+}
+
+export interface SetScheduledCleanResult {
+  success: boolean;
+  enabled: boolean;
+  frequency?: 'daily' | 'weekly' | 'monthly';
+  nextRun?: string | null;
+  reason?: string;
 }
 
 // Window Bridge API
@@ -666,9 +794,18 @@ export interface DeskKleanAPI {
 
   // Apps
   getInstalledApps: (forceRefresh?: boolean) => Promise<InstalledApp[]>;
-  uninstallApp: (appId: string, deepCleanLeftovers?: boolean) => Promise<AppUninstallResult>;
+  uninstallApp: (appId: string) => Promise<AppUninstallResult>;
   planAppUninstall?: (appId: string) => Promise<OperationPlan>;
   removeAppRegistryEntry?: (appId: string) => Promise<ExecuteResult>;
+  scanLeftovers: (appId: string) => Promise<LeftoverScanResult>;
+  cleanLeftovers: (appId: string, candidateIds: string[]) => Promise<ExecuteResult & { leftoversCleanedCount: number }>;
+
+  // Updater
+  getUpdaterStatus: () => Promise<UpdaterStatus>;
+  checkForUpdates: () => Promise<UpdaterStatus>;
+  downloadUpdate: () => Promise<UpdaterStatus>;
+  installUpdate: () => Promise<void>;
+  onUpdaterStatus?: (callback: (status: UpdaterStatus) => void) => () => void;
 
   // Extensions
   getBrowserExtensions: () => Promise<ExtensionScanResult>;
@@ -702,7 +839,24 @@ export interface DeskKleanAPI {
 
   // Settings
   getSettings: () => Promise<AppSettings>;
-  saveSettings: (settings: Partial<AppSettings>) => Promise<{ success: boolean }>;
+  saveSettings: (settings: Partial<AppSettings>) => Promise<{ success: boolean; error?: string }>;
+  validateCustomRule: (rule: CustomCleanRule) => Promise<CustomRuleValidationResult>;
+
+  // Custom Rules
+  scanCustomRules?: (rules?: CustomCleanRule[]) => Promise<CustomRuleScanResult[]>;
+  planCustomRules?: (
+    scanResults: CustomRuleScanResult[],
+    selectedRuleIds?: string[]
+  ) => Promise<OperationPlan>;
+
+  // Scheduled Cleaning (Phase 18)
+  getScheduledCleanState: () => Promise<ScheduledCleanState | null>;
+  setScheduledCleanEnabled: (params: {
+    enabled: boolean;
+    frequency?: 'daily' | 'weekly' | 'monthly';
+  }) => Promise<SetScheduledCleanResult>;
+  runScheduledCleanNow?: () => Promise<{ report: ScheduledCleanReport; exitCode: number }>;
+  isPortable?: () => Promise<boolean>;
 
   // Activity Log
   getActivityLogs: () => Promise<ActivityItem[]>;
