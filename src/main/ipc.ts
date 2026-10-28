@@ -41,7 +41,26 @@ import {
   AppSettings,
   ActivityItem,
   DiskAnalysisResult,
+  UpdaterStatus,
+  CustomCleanRule,
+  CustomRuleScanResult,
+  OperationPlan,
+  LeftoverScanResult,
 } from '../shared/types';
+import {
+  initUpdater,
+  getUpdaterStatus,
+  checkForUpdates,
+  downloadUpdate,
+  quitAndInstall,
+  dispatch,
+} from './system/updater';
+import {
+  registerScheduledTask,
+  unregisterScheduledTask,
+  getScheduledTaskState,
+} from './system/taskScheduler';
+import { runScheduledClean } from './system/scheduledClean';
 import { isWindows } from './system/powershell';
 import {
   getStartupItems,
@@ -62,6 +81,13 @@ import {
 } from './system/framework';
 import { scanSmartClean } from './system/smartclean/scan';
 import { createSmartCleanPlan } from './system/smartclean/execute';
+import {
+  createCustomRulesPlan,
+  validateCustomRule,
+  scanCustomRules,
+  CustomRuleValidationResult,
+} from './system/smartclean/customRules';
+import { createOperationPlan } from './system/framework/plan';
 import { scanRegistryFixer, createRegistryFixPlan, executeRegistryFix } from './system/registry-fixer';
 import {
   getAllInstalledApps,
@@ -69,6 +95,7 @@ import {
   createRemoveAppRegistryEntryPlan,
   invalidateAppCache,
 } from './system/appRemover';
+import { scanLeftovers, createLeftoverCleanupPlan } from './system/leftovers';
 import {
   getExtensions,
   rescanExtensions,
@@ -117,6 +144,17 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const userDataDir = app.getPath('userData');
   const settingsFile = path.join(userDataDir, 'settings.json');
   const logsFile = path.join(userDataDir, 'activity_logs.json');
+
+  function loadCurrentSettings(): AppSettings {
+    try {
+      if (fs.existsSync(settingsFile)) {
+        return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) };
+      }
+    } catch (e) {
+      console.error('Failed to read settings:', e);
+    }
+    return DEFAULT_SETTINGS;
+  }
 
   // Activity logs in-memory / persisted
   let activityLogs: ActivityItem[] = [
@@ -171,6 +209,54 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       console.error('Failed to write activity logs:', e);
     }
   }
+
+  // Initialize auto-updater
+  initUpdater({
+    isPortable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+    isPackaged: app.isPackaged,
+    currentVersion: app.getVersion(),
+    readSettings: () => {
+      try {
+        if (fs.existsSync(settingsFile)) {
+          return JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+        }
+      } catch {}
+      return DEFAULT_SETTINGS;
+    },
+    onStatusChange: (status: UpdaterStatus) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_CHANNELS.UPDATER_STATUS, status);
+      }
+    },
+  });
+
+  // Delayed startup update check (Spec §3.2: 10s delay, silent failure logged to activity log)
+  setTimeout(async () => {
+    try {
+      let autoCheck = DEFAULT_SETTINGS.autoCheckUpdates;
+      if (fs.existsSync(settingsFile)) {
+        try {
+          const s = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+          if (typeof s.autoCheckUpdates === 'boolean') {
+            autoCheck = s.autoCheckUpdates;
+          }
+        } catch {}
+      }
+      if (autoCheck && app.isPackaged && !process.env.PORTABLE_EXECUTABLE_FILE) {
+        const result = await checkForUpdates();
+        if (result.state === 'error') {
+          logActivity({
+            module: 'settings',
+            title: 'Auto-Update Check Failed',
+            detail: result.error || 'Failed to check for updates',
+            type: 'warning',
+          });
+        }
+      }
+    } catch (e: any) {
+      console.error('Delayed startup update check error:', e);
+    }
+  }, 10000);
 
   // Migrate legacy backups to the unified backup store (<userData>/backups/startup/)
   try {
@@ -747,45 +833,152 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   // --- Smart Clean ---
   let lastSmartCleanReport: SmartCleanReport | null = null;
 
-  ipcMain.handle(IPC_CHANNELS.SMART_CLEAN_SCAN, async (_, enabledCategoryIds?: string[]): Promise<SmartCleanReport> => {
-    const report = await scanSmartClean(enabledCategoryIds);
-    lastSmartCleanReport = report;
+  ipcMain.handle(
+    IPC_CHANNELS.SMART_CLEAN_SCAN,
+    async (
+      _,
+      options?: string[] | { enabledCategoryIds?: string[]; customRules?: CustomCleanRule[] }
+    ): Promise<SmartCleanReport> => {
+      let enabledCategoryIds: string[] | undefined;
+      let customRules: CustomCleanRule[] | undefined;
 
-    logActivity({
-      module: 'smart-clean',
-      title: 'Smart Clean Scan Completed',
-      detail: `Scanned ${report.categories.length} categories in ${report.scanDurationMs}ms, found ${report.totalReclaimableBytes.toLocaleString()} bytes`,
-      type: 'info',
-    });
+      if (Array.isArray(options)) {
+        enabledCategoryIds = options;
+      } else if (options && typeof options === 'object') {
+        enabledCategoryIds = options.enabledCategoryIds;
+        customRules = options.customRules;
+      }
 
-    return report;
-  });
+      const settings = loadCurrentSettings();
+      if (!customRules) {
+        customRules = settings.customRules;
+      }
+
+      const report = await scanSmartClean(enabledCategoryIds, {
+        customExcludedPaths: settings.excludedPaths,
+        customRules,
+      });
+      lastSmartCleanReport = report;
+
+      const customCount = report.customRules ? report.customRules.length : 0;
+      logActivity({
+        module: 'smart-clean',
+        title: 'Smart Clean Scan Completed',
+        detail: `Scanned ${report.categories.length} categories and ${customCount} custom rules in ${report.scanDurationMs}ms, found ${report.totalReclaimableBytes.toLocaleString()} bytes`,
+        type: 'info',
+      });
+
+      return report;
+    }
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.SMART_CLEAN_EXECUTE,
     async (
       _,
-      options?: string[] | { report?: SmartCleanReport; selectedCategoryIds?: string[] }
+      options?:
+        | string[]
+        | {
+            report?: SmartCleanReport;
+            selectedCategoryIds?: string[];
+            selectedCustomRuleIds?: string[];
+          }
     ): Promise<ExecuteResult> => {
       let selectedCategoryIds: string[] | undefined;
+      let selectedCustomRuleIds: string[] | undefined;
       let report: SmartCleanReport | null = null;
 
       if (Array.isArray(options)) {
-        selectedCategoryIds = options;
+        selectedCategoryIds = options.filter((id) => !id.startsWith('custom:'));
+        selectedCustomRuleIds = options
+          .filter((id) => id.startsWith('custom:'))
+          .map((id) => id.replace(/^custom:/, ''));
       } else if (options && typeof options === 'object') {
         selectedCategoryIds = options.selectedCategoryIds;
+        selectedCustomRuleIds = options.selectedCustomRuleIds;
         report = options.report || null;
       }
 
+      const settings = loadCurrentSettings();
+
       if (!report) {
-        report = lastSmartCleanReport || (await scanSmartClean(selectedCategoryIds));
+        report =
+          lastSmartCleanReport ||
+          (await scanSmartClean(selectedCategoryIds, {
+            customExcludedPaths: settings.excludedPaths,
+            customRules: settings.customRules,
+          }));
       }
 
       // 1. FRAMEWORK_PLAN: Convert scan report to framework OperationPlan
-      const plan = createSmartCleanPlan(report, selectedCategoryIds);
+      const catPlan = createSmartCleanPlan(report, selectedCategoryIds, {
+        customExcludedPaths: settings.excludedPaths,
+      });
+
+      const hasCustomRules =
+        report.customRules &&
+        report.customRules.length > 0 &&
+        (!selectedCustomRuleIds || selectedCustomRuleIds.length > 0);
+
+      let plan = catPlan;
+
+      if (hasCustomRules && report.customRules) {
+        const customPlan = createCustomRulesPlan(
+          report.customRules,
+          selectedCustomRuleIds,
+          { customExcludedPaths: settings.excludedPaths }
+        );
+
+        if (catPlan.actions.length === 0 && customPlan.actions.length > 0) {
+          plan = customPlan;
+        } else if (catPlan.actions.length > 0 && customPlan.actions.length > 0) {
+          // Combined plan concatenating actions from both (§3)
+          plan = createOperationPlan({
+            module: 'smart-clean',
+            actions: [...catPlan.actions, ...customPlan.actions],
+            blocked: [...catPlan.blocked, ...customPlan.blocked],
+            reversibility:
+              catPlan.reversibility === 'irreversible' ? 'irreversible' : 'reversible',
+            irreversibilityReason: catPlan.irreversibilityReason,
+            requiresElevation: catPlan.requiresElevation || customPlan.requiresElevation,
+          });
+        }
+      }
 
       // 2. FRAMEWORK_EXECUTE: Execute through framework pipeline
       return executeOperationPlan(plan.id, (item) => logActivity(item as any));
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.CUSTOM_RULES_VALIDATE,
+    async (_, rule: CustomCleanRule): Promise<CustomRuleValidationResult> => {
+      return validateCustomRule(rule);
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.CUSTOM_RULES_SCAN,
+    async (_, rules?: CustomCleanRule[]): Promise<CustomRuleScanResult[]> => {
+      const settings = loadCurrentSettings();
+      const rulesToScan = rules || settings.customRules || [];
+      return scanCustomRules(rulesToScan, {
+        customExcludedPaths: settings.excludedPaths,
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.CUSTOM_RULES_PLAN,
+    async (
+      _,
+      scanResults: CustomRuleScanResult[],
+      selectedRuleIds?: string[]
+    ): Promise<OperationPlan> => {
+      const settings = loadCurrentSettings();
+      return createCustomRulesPlan(scanResults, selectedRuleIds, {
+        customExcludedPaths: settings.excludedPaths,
+      });
     }
   );
 
@@ -1048,12 +1241,13 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   );
 
+  const recentUninstalledApps = new Map<string, InstalledApp>();
+
   ipcMain.handle(
     IPC_CHANNELS.APPS_UNINSTALL,
     async (
       _,
-      appId: string,
-      deepCleanLeftovers?: boolean
+      appId: string
     ): Promise<AppUninstallResult> => {
       // 1. Resolve application from real enumeration
       const allApps = await getAllInstalledApps();
@@ -1099,6 +1293,26 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
       const isRebootRequired = execResult.message?.includes('reboot') || false;
 
+      let leftoversResult: LeftoverScanResult | undefined;
+      if (execResult.success) {
+        recentUninstalledApps.set(appId, targetApp);
+        try {
+          leftoversResult = await scanLeftovers(targetApp, {
+            installedApps: allApps.filter((a) => a.id !== appId),
+          });
+        } catch (e) {
+          leftoversResult = {
+            appId: targetApp.id,
+            appName: targetApp.name,
+            scanned: false,
+            failureReason: e instanceof Error ? e.message : String(e),
+            candidates: [],
+            detectedCount: null,
+            totalBytes: null,
+          };
+        }
+      }
+
       return {
         appId,
         success: execResult.success,
@@ -1114,7 +1328,65 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
         reclaimableBytes: execResult.reclaimableBytes,
         failures: execResult.failures,
         backupPath: execResult.backupPath,
+        leftovers: leftoversResult,
         message: execResult.message || (execResult.success ? 'Successfully uninstalled.' : 'Uninstall failed.'),
+      };
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.APPS_SCAN_LEFTOVERS,
+    async (_, appId: string): Promise<LeftoverScanResult> => {
+      const allApps = await getAllInstalledApps();
+      const app = allApps.find((a) => a.id === appId) || recentUninstalledApps.get(appId);
+      if (!app) {
+        return {
+          appId,
+          appName: appId,
+          scanned: false,
+          failureReason: `Application "${appId}" was not found among installed or recently uninstalled applications.`,
+          candidates: [],
+          detectedCount: null,
+          totalBytes: null,
+        };
+      }
+      return scanLeftovers(app, {
+        installedApps: allApps.filter((a) => a.id !== appId),
+      });
+    }
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.APPS_CLEAN_LEFTOVERS,
+    async (
+      _,
+      appId: string,
+      candidateIds: string[]
+    ): Promise<ExecuteResult & { leftoversCleanedCount: number }> => {
+      if (!candidateIds || candidateIds.length === 0) {
+        throw new Error('No candidates selected for cleanup');
+      }
+
+      const allApps = await getAllInstalledApps();
+      const app = allApps.find((a) => a.id === appId) || recentUninstalledApps.get(appId);
+      if (!app) {
+        throw new Error(`Application "${appId}" was not found`);
+      }
+
+      const freshScan = await scanLeftovers(app, {
+        installedApps: allApps.filter((a) => a.id !== appId),
+      });
+
+      if (!freshScan.scanned) {
+        throw new Error(`Fresh scan failed before cleanup: ${freshScan.failureReason || 'unknown failure'}`);
+      }
+
+      const plan = createLeftoverCleanupPlan(freshScan, candidateIds);
+      const execResult = await executeOperationPlan(plan.id, (item) => logActivity(item as any));
+
+      return {
+        ...execResult,
+        leftoversCleanedCount: execResult.completed,
       };
     }
   );
@@ -1446,17 +1718,161 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SAVE, async (_, newSettings: Partial<AppSettings>) => {
     try {
+      // Validate custom rules on save (§4): invalid path/pattern shows an inline error and the rule is not persisted
+      if (newSettings.customRules && Array.isArray(newSettings.customRules)) {
+        for (const rule of newSettings.customRules) {
+          const val = validateCustomRule(rule);
+          if (!val.ok) {
+            return {
+              success: false,
+              error: `Custom rule "${rule.name || rule.id}" failed validation: ${val.reason}`,
+            };
+          }
+        }
+      }
+
       let current = DEFAULT_SETTINGS;
       if (fs.existsSync(settingsFile)) {
         current = { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) };
       }
       const updated = { ...current, ...newSettings };
       fs.writeFileSync(settingsFile, JSON.stringify(updated, null, 2));
+
+      // Refresh updater state if autoCheckUpdates changed (§4.2)
+      if (newSettings.autoCheckUpdates !== undefined) {
+        const currentUpdaterStatus = getUpdaterStatus();
+        if (currentUpdaterStatus.state === 'idle' && !newSettings.autoCheckUpdates) {
+          initUpdater({
+            isPortable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+            isPackaged: app.isPackaged,
+            currentVersion: app.getVersion(),
+            readSettings: () => updated,
+            onStatusChange: (status: UpdaterStatus) => {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send(IPC_CHANNELS.UPDATER_STATUS, status);
+              }
+            },
+          });
+        } else if (currentUpdaterStatus.state === 'disabled' && newSettings.autoCheckUpdates) {
+          initUpdater({
+            isPortable: !!process.env.PORTABLE_EXECUTABLE_FILE,
+            isPackaged: app.isPackaged,
+            currentVersion: app.getVersion(),
+            readSettings: () => updated,
+            onStatusChange: (status: UpdaterStatus) => {
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send(IPC_CHANNELS.UPDATER_STATUS, status);
+              }
+            },
+          });
+        }
+      }
+
       return { success: true };
     } catch (e) {
       console.error('Failed to save settings:', e);
       return { success: false };
     }
+  });
+
+  // --- Updater ---
+  ipcMain.handle(IPC_CHANNELS.UPDATER_GET_STATUS, async (): Promise<UpdaterStatus> => {
+    return getUpdaterStatus();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_CHECK, async (): Promise<UpdaterStatus> => {
+    return checkForUpdates();
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_DOWNLOAD, async (): Promise<UpdaterStatus> => {
+    try {
+      await downloadUpdate();
+      return getUpdaterStatus();
+    } catch (e: any) {
+      dispatch({ type: 'DOWNLOAD_ERROR', error: e?.message || String(e || 'Download failed') });
+      return getUpdaterStatus();
+    }
+  });
+
+  ipcMain.handle(IPC_CHANNELS.UPDATER_INSTALL, async (): Promise<UpdaterStatus> => {
+    try {
+      quitAndInstall();
+      return getUpdaterStatus();
+    } catch (e: any) {
+      dispatch({ type: 'DOWNLOAD_ERROR', error: e?.message || String(e || 'Install failed') });
+      return getUpdaterStatus();
+    }
+  });
+
+  // --- Scheduled Cleaning (Phase 18) ---
+  ipcMain.handle(IPC_CHANNELS.SCHEDULED_GET_STATE, async () => {
+    const isPortable = Boolean(process.env.PORTABLE_EXECUTABLE_FILE);
+    const taskState = await getScheduledTaskState();
+    if (taskState === null) {
+      return isPortable
+        ? { registered: false, nextRun: null, lastRun: null, lastResult: null, isPortable: true }
+        : null;
+    }
+    return {
+      ...taskState,
+      isPortable,
+    };
+  });
+
+  ipcMain.handle(
+    IPC_CHANNELS.SCHEDULED_SET_ENABLED,
+    async (_event, params: { enabled: boolean; frequency?: 'daily' | 'weekly' | 'monthly' }) => {
+      const current = loadCurrentSettings();
+      if (params.enabled) {
+        const freq = params.frequency || current.scheduledCleanFrequency || 'weekly';
+        const regResult = await registerScheduledTask(freq);
+        if (!regResult.ok) {
+          return {
+            success: false,
+            reason: regResult.reason,
+            enabled: current.scheduledCleanEnabled,
+            frequency: current.scheduledCleanFrequency,
+          };
+        }
+        // Persist ONLY on success
+        current.scheduledCleanEnabled = true;
+        current.scheduledCleanFrequency = freq;
+        fs.writeFileSync(settingsFile, JSON.stringify(current, null, 2));
+        return {
+          success: true,
+          enabled: true,
+          frequency: freq,
+          nextRun: regResult.nextRun,
+          reason: regResult.reason,
+        };
+      } else {
+        const unregResult = await unregisterScheduledTask();
+        if (!unregResult.ok) {
+          return {
+            success: false,
+            reason: unregResult.reason,
+            enabled: current.scheduledCleanEnabled,
+            frequency: current.scheduledCleanFrequency,
+          };
+        }
+        // Persist ONLY on success
+        current.scheduledCleanEnabled = false;
+        fs.writeFileSync(settingsFile, JSON.stringify(current, null, 2));
+        return {
+          success: true,
+          enabled: false,
+          frequency: current.scheduledCleanFrequency,
+        };
+      }
+    }
+  );
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULED_RUN_NOW, async () => {
+    return await runScheduledClean({ trigger: 'manual' });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.APP_IS_PORTABLE, () => {
+    return Boolean(process.env.PORTABLE_EXECUTABLE_FILE);
   });
 
   // --- Activity Logs ---

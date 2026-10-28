@@ -67,6 +67,8 @@ jobs:
           path: |
             release/*.exe
             release/*.zip
+            release/latest.yml
+            release/*.blockmap
           if-no-files-found: warn
 
       - name: Create GitHub Release
@@ -79,4 +81,6 @@ jobs:
           files: |
             release/*.exe
             release/*.zip
+            release/latest.yml
+            release/*.blockmap
           fail_on_unmatched_files: false

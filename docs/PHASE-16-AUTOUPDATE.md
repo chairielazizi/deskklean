@@ -91,15 +91,22 @@ export type UpdaterState =
 
 export interface UpdaterStatus {
   state: UpdaterState;
-  currentVersion: string;          // app.getVersion()
+  currentVersion: string;          // app.getVersion() / APP_VERSION — never a literal in updater.ts
   availableVersion: string | null; // null unless state is available/downloading/downloaded
   releaseNotes: string | null;     // null when the feed has none — never synthesised
   progressPercent: number | null;  // real from electron-updater, null when unknown
   bytesPerSecond: number | null;
   lastCheckedAt: string | null;    // ISO, only after a check actually ran
-  error: string | null;            // populated ONLY in state 'error'
+  error: string | null;            // populated ONLY in state 'error' — null in every other state
+  message: string | null;          // reason for 'unavailable' / 'disabled'. NEVER used for a failed check.
 }
 ```
+
+**`error` vs `message` (resolved ambiguity, 2026-10-26).** An earlier draft had only `error`, which left
+`unavailable` with nowhere to put its reason. The resolution is *not* to populate `error` in
+`unavailable` — that conflates "this build cannot update" with "the update check failed", which is the
+exact distinction the rail exists to protect. `message` carries the reason for `unavailable` and
+`disabled`; `error` stays `null` outside state `error`.
 
 Functions:
 
@@ -121,6 +128,14 @@ Functions:
 - **`progressPercent` is `null` when the feed does not report it.** Do not compute a fake ramp from
   elapsed time.
 - **`releaseNotes` is passed through or `null`.** Never generated.
+- **No invented version strings.** `availableVersion` is a version the feed actually reported. If an
+  `update-available` event arrives without a `version`, that is a `CHECK_ERROR` — never
+  `availableVersion: 'unknown'`.
+- **`currentVersion` is read, not written.** It comes from `app.getVersion()` (or the `APP_VERSION`
+  constant). No version literal may be hard-coded in `updater.ts` — a literal default silently
+  becomes a lie on the next release.
+- **`error` is `null` outside state `error`.** An `unavailable` build reports its reason in `message`.
+  A renderer that renders `status.error` as an error banner must not light up for a portable build.
 - **Portable builds cannot self-update.** Detect `process.env.PORTABLE_EXECUTABLE_FILE` (already
   handled elsewhere in `ipc.ts` for portable awareness) and return
   `state: 'unavailable'` with a message naming the portable limitation. Registering an updater

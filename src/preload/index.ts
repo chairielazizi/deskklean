@@ -16,6 +16,7 @@ import {
   ExecuteResult,
   InstalledApp,
   AppUninstallResult,
+  LeftoverScanResult,
   BrowserExtension,
   BrowserType,
   BrowserId,
@@ -32,9 +33,16 @@ import {
   ShredResult,
   WipeResult,
   AppSettings,
+  CustomCleanRule,
+  CustomRuleValidationResult,
+  CustomRuleScanResult,
   ActivityItem,
   DiskAnalysisResult,
   ScanProgressEvent,
+  UpdaterStatus,
+  ScheduledCleanState,
+  SetScheduledCleanResult,
+  ScheduledCleanReport,
 } from '../shared/types';
 
 const api: DeskKleanAPI = {
@@ -90,12 +98,36 @@ const api: DeskKleanAPI = {
   // Apps
   getInstalledApps: (forceRefresh?: boolean): Promise<InstalledApp[]> =>
     ipcRenderer.invoke(IPC_CHANNELS.APPS_GET_INSTALLED, forceRefresh),
-  uninstallApp: (appId: string, deepCleanLeftovers?: boolean): Promise<AppUninstallResult> =>
-    ipcRenderer.invoke(IPC_CHANNELS.APPS_UNINSTALL, appId, deepCleanLeftovers),
+  uninstallApp: (appId: string): Promise<AppUninstallResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPS_UNINSTALL, appId),
   planAppUninstall: (appId: string): Promise<OperationPlan> =>
     ipcRenderer.invoke(IPC_CHANNELS.FRAMEWORK_PLAN, 'app-remover', { appId }),
   removeAppRegistryEntry: (appId: string): Promise<ExecuteResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.APPS_REMOVE_ENTRY_ONLY, appId),
+  scanLeftovers: (appId: string): Promise<LeftoverScanResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPS_SCAN_LEFTOVERS, appId),
+  cleanLeftovers: (
+    appId: string,
+    candidateIds: string[]
+  ): Promise<ExecuteResult & { leftoversCleanedCount: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APPS_CLEAN_LEFTOVERS, appId, candidateIds),
+
+  // Updater
+  getUpdaterStatus: (): Promise<UpdaterStatus> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATER_GET_STATUS),
+  checkForUpdates: (): Promise<UpdaterStatus> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATER_CHECK),
+  downloadUpdate: (): Promise<UpdaterStatus> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATER_DOWNLOAD),
+  installUpdate: (): Promise<void> =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATER_INSTALL),
+  onUpdaterStatus: (callback: (status: UpdaterStatus) => void) => {
+    const listener = (_: unknown, status: UpdaterStatus) => callback(status);
+    ipcRenderer.on(IPC_CHANNELS.UPDATER_STATUS, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.UPDATER_STATUS, listener);
+    };
+  },
 
   // Extensions
   getBrowserExtensions: (): Promise<ExtensionScanResult> =>
@@ -148,6 +180,30 @@ const api: DeskKleanAPI = {
   // Settings
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   saveSettings: (settings: Partial<AppSettings>) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SAVE, settings),
+  validateCustomRule: (rule: CustomCleanRule): Promise<CustomRuleValidationResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CUSTOM_RULES_VALIDATE, rule),
+
+  // Custom Rules
+  scanCustomRules: (rules?: CustomCleanRule[]): Promise<CustomRuleScanResult[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CUSTOM_RULES_SCAN, rules),
+  planCustomRules: (
+    scanResults: CustomRuleScanResult[],
+    selectedRuleIds?: string[]
+  ): Promise<OperationPlan> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CUSTOM_RULES_PLAN, scanResults, selectedRuleIds),
+
+  // Scheduled Cleaning (Phase 18)
+  getScheduledCleanState: (): Promise<ScheduledCleanState | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULED_GET_STATE),
+  setScheduledCleanEnabled: (params: {
+    enabled: boolean;
+    frequency?: 'daily' | 'weekly' | 'monthly';
+  }): Promise<SetScheduledCleanResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULED_SET_ENABLED, params),
+  runScheduledCleanNow: (): Promise<{ report: ScheduledCleanReport; exitCode: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULED_RUN_NOW),
+  isPortable: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APP_IS_PORTABLE),
 
   // Activity Log
   getActivityLogs: (): Promise<ActivityItem[]> => ipcRenderer.invoke(IPC_CHANNELS.LOGS_GET),

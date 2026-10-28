@@ -16,6 +16,7 @@ import {
   ExecuteResult,
   InstalledApp,
   AppUninstallResult,
+  LeftoverScanResult,
   BrowserExtension,
   BrowserType,
   BrowserId,
@@ -34,8 +35,14 @@ import {
   AppSettings,
   ActivityItem,
   DiskAnalysisResult,
+  UpdaterStatus,
+  CustomRuleScanResult,
+  CustomCleanRule,
+  ScheduledCleanState,
+  SetScheduledCleanResult,
+  ScheduledCleanReport,
 } from '../shared/types';
-import { DEFAULT_CLEAN_CATEGORIES, DEFAULT_SETTINGS, SHRED_METHODS } from '../shared/constants';
+import { APP_VERSION, DEFAULT_CLEAN_CATEGORIES, DEFAULT_SETTINGS, SHRED_METHODS } from '../shared/constants';
 
 // Fallback mock API for running in web browser preview or development
 const mockAPI: DeskKleanAPI = {
@@ -580,13 +587,84 @@ const mockAPI: DeskKleanAPI = {
     },
   ],
 
-  uninstallApp: async (appId: string, deepCleanLeftovers?: boolean): Promise<AppUninstallResult> => ({
+  uninstallApp: async (appId: string): Promise<AppUninstallResult> => ({
     appId,
     success: true,
     leftoversCleanedCount: 0,
     verified: true,
     verificationDetail: 'Removal confirmed: application is no longer registered in system.',
     message: 'App successfully removed and verified.',
+    leftovers: {
+      appId,
+      appName: appId === 'app-vscode' ? 'Visual Studio Code' : 'Google Chrome',
+      scanned: true,
+      failureReason: null,
+      candidates: [
+        {
+          id: `leftover-${appId}-appdata`,
+          kind: 'directory',
+          path: `C:\\Users\\User\\AppData\\Local\\${appId}`,
+          sizeBytes: 15400000,
+          confidence: 'high',
+          reason: 'Exact match in %LOCALAPPDATA%',
+          selectableByDefault: true,
+        },
+        {
+          id: `leftover-${appId}-reg`,
+          kind: 'registry-key',
+          path: `HKCU\\Software\\${appId}`,
+          sizeBytes: null,
+          confidence: 'high',
+          reason: 'Exact match in HKCU\\Software',
+          selectableByDefault: true,
+        },
+      ],
+      detectedCount: 2,
+      totalBytes: 15400000,
+    },
+  }),
+
+  scanLeftovers: async (appId: string): Promise<LeftoverScanResult> => ({
+    appId,
+    appName: appId === 'app-vscode' ? 'Visual Studio Code' : 'Google Chrome',
+    scanned: true,
+    failureReason: null,
+    candidates: [
+      {
+        id: `leftover-${appId}-appdata`,
+        kind: 'directory',
+        path: `C:\\Users\\User\\AppData\\Local\\${appId}`,
+        sizeBytes: 15400000,
+        confidence: 'high',
+        reason: 'Exact match in %LOCALAPPDATA%',
+        selectableByDefault: true,
+      },
+      {
+        id: `leftover-${appId}-reg`,
+        kind: 'registry-key',
+        path: `HKCU\\Software\\${appId}`,
+        sizeBytes: null,
+        confidence: 'high',
+        reason: 'Exact match in HKCU\\Software',
+        selectableByDefault: true,
+      },
+    ],
+    detectedCount: 2,
+    totalBytes: 15400000,
+  }),
+
+  cleanLeftovers: async (
+    appId: string,
+    candidateIds: string[]
+  ): Promise<ExecuteResult & { leftoversCleanedCount: number }> => ({
+    success: true,
+    completed: candidateIds.length,
+    failed: 0,
+    skipped: 0,
+    reclaimableBytes: 15400000,
+    failures: [],
+    message: `${candidateIds.length} leftover items removed successfully.`,
+    leftoversCleanedCount: candidateIds.length,
   }),
 
   planAppUninstall: async (appId: string): Promise<OperationPlan> => ({
@@ -956,8 +1034,96 @@ const mockAPI: DeskKleanAPI = {
 
   isTargetSsd: async (): Promise<boolean | null> => true,
 
+  // Updater
+  getUpdaterStatus: async (): Promise<UpdaterStatus> => ({
+    state: 'unavailable',
+    currentVersion: APP_VERSION,
+    availableVersion: null,
+    releaseNotes: null,
+    progressPercent: null,
+    bytesPerSecond: null,
+    lastCheckedAt: null,
+    error: null,
+    message: 'Updater is unavailable in browser preview mode',
+  }),
+  checkForUpdates: async (): Promise<UpdaterStatus> => ({
+    state: 'unavailable',
+    currentVersion: APP_VERSION,
+    availableVersion: null,
+    releaseNotes: null,
+    progressPercent: null,
+    bytesPerSecond: null,
+    lastCheckedAt: null,
+    error: null,
+    message: 'Updater is unavailable in browser preview mode',
+  }),
+  downloadUpdate: async (): Promise<UpdaterStatus> => ({
+    state: 'unavailable',
+    currentVersion: APP_VERSION,
+    availableVersion: null,
+    releaseNotes: null,
+    progressPercent: null,
+    bytesPerSecond: null,
+    lastCheckedAt: null,
+    error: null,
+    message: 'Updater is unavailable in browser preview mode',
+  }),
+  installUpdate: async (): Promise<void> => {},
+  onUpdaterStatus: () => () => {},
+
   getSettings: async (): Promise<AppSettings> => DEFAULT_SETTINGS,
   saveSettings: async () => ({ success: true }),
+  validateCustomRule: async (rule) => {
+    if (!rule.directoryPath.trim()) return { ok: false, reason: 'Directory path must be a non-empty string' };
+    if (!rule.filePattern.trim()) return { ok: false, reason: 'File pattern must be a non-empty string' };
+    if (rule.directoryPath.includes('..')) return { ok: false, reason: 'Path traversal using ".." is prohibited' };
+    if (rule.filePattern.includes('**')) return { ok: false, reason: 'File pattern cannot contain "**"' };
+    return { ok: true, resolvedRoot: rule.directoryPath };
+  },
+
+  scanCustomRules: async (rules?: CustomCleanRule[]): Promise<CustomRuleScanResult[]> => [],
+  planCustomRules: async (
+    scanResults: CustomRuleScanResult[],
+    selectedRuleIds?: string[]
+  ): Promise<OperationPlan> => ({
+    id: `plan-custom-mock-${Date.now()}`,
+    module: 'smartclean-custom',
+    actions: [],
+    blocked: [],
+    requiresElevation: false,
+    reversibility: 'reversible',
+    totalReclaimableBytes: 0,
+    createdAt: new Date().toISOString(),
+  }),
+
+  // Scheduled Cleaning (Phase 18)
+  getScheduledCleanState: async (): Promise<ScheduledCleanState | null> => ({
+    registered: false,
+    nextRun: null,
+    lastRun: null,
+    lastResult: null,
+    isPortable: false,
+  }),
+  setScheduledCleanEnabled: async ({ enabled, frequency }) => ({
+    success: true,
+    enabled,
+    frequency,
+    nextRun: enabled ? new Date(Date.now() + 86400000).toISOString() : null,
+  }),
+  runScheduledCleanNow: async () => ({
+    report: {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      trigger: 'manual',
+      appVersion: APP_VERSION,
+      elevated: false,
+      skippedReason: null,
+      categories: [],
+      totals: { completed: 0, failed: 0, skipped: 0, reclaimedBytes: null },
+    },
+    exitCode: 0,
+  }),
+  isPortable: async () => false,
 
   getActivityLogs: async (): Promise<ActivityItem[]> => [
     {
