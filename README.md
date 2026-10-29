@@ -8,14 +8,14 @@ DeskKlean backs up registry state before modifications, routes user files throug
 
 ---
 
-## Downloads (v1.0.1)
+## Downloads (v1.1.0)
 
-Grab the latest release from the [GitHub Releases](https://github.com/chairielazizi/deskklean/releases/tag/v1.0.1) page:
+Grab the latest release from the [GitHub Releases](https://github.com/chairielazizi/deskklean/releases/tag/v1.1.0) page:
 
 | Artifact | Type | Description |
 |---|---|---|
-| **[`DeskKlean Setup 1.0.1.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.1/DeskKlean.Setup.1.0.1.exe)** | NSIS Installer | Installs per-user to `%LOCALAPPDATA%\Programs\DeskKlean`. Does not require administrative privileges to install. |
-| **[`DeskKlean-Portable-1.0.1.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.0.1/DeskKlean-Portable-1.0.1.exe)** | Portable `.exe` | Standalone single-file executable. Runs directly without installation. |
+| **[`DeskKlean Setup 1.1.0.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.1.0/DeskKlean.Setup.1.1.0.exe)** | NSIS Installer | Installs per-user to `%LOCALAPPDATA%\Programs\DeskKlean`. Does not require administrative privileges to install. |
+| **[`DeskKlean-Portable-1.1.0.exe`](https://github.com/chairielazizi/deskklean/releases/download/v1.1.0/DeskKlean-Portable-1.1.0.exe)** | Portable `.exe` | Standalone single-file executable. Runs directly without installation. |
 
 ### ⚠️ Windows SmartScreen Notice
 

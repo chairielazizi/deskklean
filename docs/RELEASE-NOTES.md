@@ -1,3 +1,44 @@
+# DeskKlean v1.1.0
+
+Minor release. No settings-schema changes. Four features that were persisted and rendered but never
+implemented are now wired end to end. A v1.0.1 (or earlier) `settings.json` loads unchanged.
+
+## What's new
+
+### Auto-update (Phase 16)
+- Stable-channel auto-update via `electron-updater` against GitHub Releases.
+- Manual \"Check for updates\" in Settings; status reporting with `error` only in the `error`
+  state (no invented \"up to date\" claims), plus a renderer banner guard.
+- `latest.yml` / `.blockmap` consumed at runtime for differential downloads.
+
+### Custom clean rules (Phase 17)
+- User-defined `CustomCleanRule` entries in Settings now drive SmartClean's scan, plan, and
+  execute paths.
+- Protected-path checks enforced per run; partial results reported as `completed`/`failed`/`skipped`.
+
+### Scheduled cleaning (Phase 18)
+- Headless `--scheduled-clean` CLI entry point (no window, no tray) runnable from Windows
+  Task Scheduler.
+- Real register/unregister through PowerShell-backed `taskScheduler.ts`; portable builds refuse.
+- Settings toggle wires to the real Task Scheduler and reverts on registration failure with the
+  reason surfaced; honest next-run reporting (null when not registered).
+
+### AppRemover leftover detection (Phase 19)
+- Read-only, user-guided detection of post-uninstall leftovers (file tree + registry), with
+  `scanLeftovers` returning `scanned: false` + `null` on failure (never `0`).
+- Confidence tiers surfaced in the UI (high preselected, medium flagged as name-match only).
+- Cleanup routes through the shared destructive framework (Recycle Bin for user data).
+
+## Known limitations
+- Unsigned binary — Windows SmartScreen warning persists until the binary builds
+  reputation (no new signing decision in this release).
+- Windows only.
+- Scheduled cleaning requires a packaged (non-portable) Windows build; the in-app runner
+  surfaces next-run where available.
+- Beta update channel and browser-cache categories remain deferred to v1.2.0+.
+
+---
+
 # DeskKlean v1.0.1
 
 Patch release. No new features and no settings-schema changes.

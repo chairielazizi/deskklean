@@ -1,7 +1,7 @@
 import { AppSettings, ShredMethod, CleanSubcategory } from './types';
 
 export const APP_NAME = 'DeskKlean';
-export const APP_VERSION = '1.0.1';
+export const APP_VERSION = '1.1.0';
 export const APP_AUTHOR = 'DeskKlean Team';
 
 export const IPC_CHANNELS = {
